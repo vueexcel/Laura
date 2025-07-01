@@ -1,0 +1,49 @@
+org: glowingsoft
+app: rewardwee-express
+service: rewardwee
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  stage: dev
+  region: us-east-1
+  runtime: nodejs16.x
+  memorySize: 256
+  apiGateway:
+    binaryMediaTypes:
+      - '*/*'
+  
+  iam:
+    role:
+      statements:
+        - Effect: 'Allow'
+          Action:
+            - s3:*
+          Resource: '*' 
+
+plugins:
+  - serverless-offline
+  - serverless-deployment-bucket
+  - serverless-prune-plugin
+  # - serverless-plugin-split-stacks
+  # - serverless-iam-roles-per-function
+
+custom:
+  fileUploadBucketName: ${self:service}-bucket-${self:provider.stage}
+  prune:
+    automatic: true
+    number: 1
+
+functions:
+  app:
+    handler: handler.api
+    events:
+      - http:
+          path: /
+          method: ANY
+          cors: true
+      - http:
+          path: /{proxy+}
+          method: ANY
+          cors: true
+

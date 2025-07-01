@@ -1,0 +1,103 @@
+<!-- <!DOCTYPE html>
+<html>
+<body>
+  <input type="text" id="questionInput" placeholder="Type your question..." style="width: 300px;" />
+  <button onclick="sendQuestion()">Submit</button>
+  <pre id="output"></pre>
+
+  <script>
+    const output = document.getElementById('output');
+    const input = document.getElementById('questionInput');
+
+    function sendQuestion() {
+      output.textContent = ""; // Clear previous output
+
+      fetch('http://localhost:4000/api/auth/home/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY4NDgxN2I0NDIyMmZjYzIwYTMwZjEzNyIsIm5hbWUiOiJ0ZXN0MTAxIiwiZW1haWwiOiJnbG93aW5nYW5kZGV2MTRAZ21haWwuY29tIiwiaWF0IjoxNzUwMzk4MzY3fQ.n3M3rRYddgHwErBEu96PJs2nWAPSbA0XEDLpVgsri6g"
+        },
+        body: JSON.stringify({ question: input.value })
+      })
+      .then(response => {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        function read() {
+          reader.read().then(({ done, value }) => {
+            if (done) {
+              output.textContent += "\n[Stream ended]";
+              return;
+            }
+            output.textContent += decoder.decode(value, { stream: true });
+            read();
+          });
+        }
+
+        read();
+      })
+      .catch(error => {
+        output.textContent = "Error: " + error.message;
+      });
+    }
+  </script>
+</body>
+</html> -->
+
+
+
+<!DOCTYPE html>
+<html>
+<body>
+  <input type="text" id="questionInput" placeholder="Type your question..." style="width: 300px;" />
+  <button onclick="sendQuestion()">Submit</button>
+  <pre id="output"></pre>
+
+  <script>
+    const output = document.getElementById('output');
+    const input = document.getElementById('questionInput');
+
+    function logTime(label) {
+      const time = new Date().toLocaleTimeString();
+      output.textContent += `\n[${label} @ ${time}]`;
+    }
+
+    function sendQuestion() {
+      output.textContent = ""; // Clear previous output
+      logTime("Request sent");
+
+      fetch('http://localhost:4000/api/auth/home/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY4NDgxN2I0NDIyMmZjYzIwYTMwZjEzNyIsIm5hbWUiOiJ0ZXN0MTAxIiwiZW1haWwiOiJnbG93aW5nYW5kZGV2MTRAZ21haWwuY29tIiwiaWF0IjoxNzUwMzk4MzY3fQ.n3M3rRYddgHwErBEu96PJs2nWAPSbA0XEDLpVgsri6g"
+        },
+        body: JSON.stringify({ question: input.value })
+      })
+      .then(response => {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        logTime("Stream started");
+
+        function read() {
+          reader.read().then(({ done, value }) => {
+            if (done) {
+              logTime("Stream ended");
+              return;
+            }
+            output.textContent += decoder.decode(value, { stream: true });
+            read();
+          });
+        }
+
+        read();
+      })
+      .catch(error => {
+        output.textContent = "Error: " + error.message;
+      });
+    }
+  </script>
+</body>
+</html>

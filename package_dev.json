@@ -1,0 +1,35 @@
+{
+  "name": "seleckt",
+  "version": "1.0.0",
+  "description": "",
+  "main": "handler.js",
+  "scripts": {
+    "test": "npm update",
+    "run": "node handler.js",
+    "server": "nodemon handler.js"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.1125.0",
+    "bcrypt": "^5.0.1",
+    "bcryptjs": "^2.4.3",
+    "busboy": "^1.6.0",
+    "colors": "^1.4.0",
+    "connect-busboy": "^1.0.0",
+    "dotenv": "^16.0.1",
+    "express": "^4.17.1",
+    "express-async-handler": "^1.2.0",
+    "graceful-fs": "^4.2.10",
+    "jsonwebtoken": "^8.5.1",
+    "mongoose": "^5.13.14",
+    "nodemailer": "^6.7.5",
+    "nodemon": "^2.0.16",
+    "serverless-deployment-bucket": "^1.6.0",
+    "serverless-http": "^2.7.0",
+    "serverless-iam-roles-per-function": "^3.2.0",
+    "serverless-offline": "^8.8.0",
+    "serverless-plugin-split-stacks": "^1.11.3"
+  },
+  "devDependencies": {
+    "serverless-prune-plugin": "^2.0.1"
+  }
+}
