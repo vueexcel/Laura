@@ -22,7 +22,12 @@ const db = async () => {
     //     process.exit(1)
     // }
 
-    mongoose.connect(uri, { useNewUrlParser: true, useUnifiedTopology: true, autoIndex: true, dbName: "" });
+    mongoose.connect(uri, { 
+        useNewUrlParser: true, 
+        useUnifiedTopology: true, 
+        autoIndex: true,
+        dbName: "laura"
+    });
 
     mongoose.connection.on('connected', function () {
         console.log("Database connection established".cyan.underline);
