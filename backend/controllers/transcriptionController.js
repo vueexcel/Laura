@@ -1,6 +1,7 @@
 const asyncHandler = require('express-async-handler');
 const { transcribeAudio } = require('../helpers/transcriptionHelper');
 const { generateResponse } = require('../helpers/responseHelper');
+const { textToSpeech } = require('../helpers/audioHelper');
 const fs = require('fs');
 const path = require('path');
 
@@ -23,15 +24,22 @@ const transcribeVoice = asyncHandler(async (req, res) => {
     const transcription = await transcribeAudio(req.file.path);
     
     // Generate AI response from transcribed text
-    const aiResponse = await generateResponse(transcription);
+    const textResponse = await generateResponse(transcription);
     
+    // Convert response to audio
+    const audioBuffer = await textToSpeech(textResponse);
+
     // Clean up the uploaded file
     fs.unlinkSync(req.file.path);
+
+    // Set response headers for JSON response
+    res.setHeader('Content-Type', 'application/json');
 
     res.status(200).json({
       success: true,
       transcription: transcription,
-      response: aiResponse
+      response: textResponse,
+      audio: audioBuffer.toString('base64')
     });
 
   } catch (error) {

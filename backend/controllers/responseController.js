@@ -1,5 +1,6 @@
 const asyncHandler = require('express-async-handler');
 const { generateResponse } = require('../helpers/responseHelper');
+const { textToSpeech } = require('../helpers/audioHelper');
 
 const generateAIResponse = asyncHandler(async (req, res) => {
     try {
@@ -12,11 +13,17 @@ const generateAIResponse = asyncHandler(async (req, res) => {
             });
         }
 
-        const response = await generateResponse(transcribedText);
+        const textResponse = await generateResponse(transcribedText);
+        const audioBuffer = await textToSpeech(textResponse);
 
+        // Set response headers for JSON response
+        res.setHeader('Content-Type', 'application/json');
+
+        // Send both text and audio response
         res.status(200).json({
             success: true,
-            response: response
+            response: textResponse,
+            audio: audioBuffer.toString('base64')
         });
 
     } catch (error) {
