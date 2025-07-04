@@ -1,5 +1,5 @@
 const asyncHandler = require('express-async-handler');
-const { generateResponse, getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById } = require('../helpers/responseHelper');
+const { generateResponse, getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch } = require('../helpers/firestoreHelper');
 const { textToSpeech } = require('../helpers/audioHelper');
 const { transcribeAudio } = require('../helpers/transcriptionHelper');
 const AiChat = require('../schemas/AiChat');
@@ -62,13 +62,25 @@ const getChatHistory = asyncHandler(async (req, res) => {
         // Get limit from query params or default to 10
         const limit = req.query.limit ? parseInt(req.query.limit) : 10;
         
-        // Use the helper function to get chat history
-        const chatHistory = await getChatHistoryForUser(userId, limit);
+        // Check if semantic search is requested
+        if (req.query.search) {
+            // Perform semantic search
+            const searchResults = await semanticSearch(userId, req.query.search, limit);
+            
+            res.status(200).json({
+                success: true,
+                chatHistory: searchResults,
+                searchQuery: req.query.search
+            });
+        } else {
+            // Use the helper function to get regular chat history
+            const chatHistory = await getChatHistoryForUser(userId, limit);
 
-        res.status(200).json({
-            success: true,
-            chatHistory: chatHistory
-        });
+            res.status(200).json({
+                success: true,
+                chatHistory: chatHistory
+            });
+        }
     } catch (error) {
         console.error('Error fetching chat history:', error);
         res.status(500).json({

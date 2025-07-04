@@ -1,106 +1,153 @@
-<!--
-title: 'Serverless Framework Node Express API on AWS'
-description: 'This template demonstrates how to develop and deploy a simple Node Express API running on AWS Lambda using the traditional Serverless Framework.'
-layout: Doc
-framework: v3
-platform: AWS
-language: nodeJS
-priority: 1
-authorLink: 'https://github.com/serverless'
-authorName: 'Serverless, inc.'
-authorAvatar: 'https://avatars1.githubusercontent.com/u/13742415?s=200&v=4'
--->
+# Laura AI Backend API
 
-# Serverless Framework Node Express API on AWS
+This is the backend API for Laura AI, a conversational AI assistant that provides natural language responses and supports audio input/output. The backend is built with Node.js, Express, and uses Firebase Firestore for data storage with vector search capabilities.
 
-This template demonstrates how to develop and deploy a simple Node Express API service running on AWS Lambda using the traditional Serverless Framework.
+## Features
 
-## Anatomy of the template
+- **Conversational AI**: Uses OpenAI's GPT-4o model to generate human-like responses
+- **Audio Support**: Accepts audio input and provides text-to-speech output
+- **Chat History**: Stores conversation history for context and retrieval
+- **Vector Search**: Implements semantic search using embeddings for more accurate query results
 
-This template configures a single function, `api`, which is responsible for handling all incoming requests thanks to the `httpApi` event. To learn more about `httpApi` event configuration options, please refer to [httpApi event docs](https://www.serverless.com/framework/docs/providers/aws/events/http-api/). As the event is configured in a way to accept all incoming requests, `express` framework is responsible for routing and handling requests internally. Implementation takes advantage of `serverless-http` package, which allows you to wrap existing `express` applications. To learn more about `serverless-http`, please refer to corresponding [GitHub repository](https://github.com/dougmoscrop/serverless-http).
+## API Endpoints
 
-## Usage
-
-### Deployment
-
-Install dependencies with:
+### Generate AI Response
 
 ```
-npm install
+POST /api/response/generate
 ```
 
-and then deploy with:
+**Request:**
+- Form data with either:
+  - `audio` file (audio recording)
+  - `transcribedText` (text input)
 
-```
-serverless deploy
-```
-
-After running deploy, you should see output similar to:
-
-```bash
-Deploying aws-node-express-api-project to stage dev (us-east-1)
-
-✔ Service deployed to stack aws-node-express-api-project-dev (196s)
-
-endpoint: ANY - https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com
-functions:
-  api: aws-node-express-api-project-dev-api (766 kB)
+**Response:**
+```json
+{
+  "success": true,
+  "response": "Text response from AI",
+  "audio": "base64-encoded audio response"
+}
 ```
 
-_Note_: In current form, after deployment, your API is public and can be invoked by anyone. For production deployments, you might want to configure an authorizer. For details on how to do that, refer to [`httpApi` event docs](https://www.serverless.com/framework/docs/providers/aws/events/http-api/).
-
-### Invocation
-
-After successful deployment, you can call the created application via HTTP:
-
-```bash
-curl https://xxxxxxx.execute-api.us-east-1.amazonaws.com/
-```
-
-Which should result in the following response:
+### Get Chat History
 
 ```
-{"message":"Hello from root!"}
+GET /api/response/history
 ```
 
-Calling the `/hello` path with:
+**Query Parameters:**
+- `limit` (optional): Maximum number of entries to return (default: 10)
+- `search` (optional): Semantic search query to find relevant conversations
 
-```bash
-curl https://xxxxxxx.execute-api.us-east-1.amazonaws.com/hello
+**Response:**
+```json
+{
+  "success": true,
+  "chatHistory": [
+    {
+      "question": "User question",
+      "response": "AI response",
+      "createdAt": "timestamp",
+      "id": "entry-id"
+    }
+  ]
+}
 ```
 
-Should result in the following response:
-
-```bash
-{"message":"Hello from path!"}
+When using semantic search:
+```json
+{
+  "success": true,
+  "chatHistory": [
+    {
+      "question": "User question",
+      "response": "AI response",
+      "createdAt": "timestamp",
+      "id": "entry-id",
+      "similarity": 0.92
+    }
+  ],
+  "searchQuery": "your search query"
+}
 ```
 
-If you try to invoke a path or method that does not have a configured handler, e.g. with:
-
-```bash
-curl https://xxxxxxx.execute-api.us-east-1.amazonaws.com/nonexistent
-```
-
-You should receive the following response:
-
-```bash
-{"error":"Not Found"}
-```
-
-### Local development
-
-It is also possible to emulate API Gateway and Lambda locally by using `serverless-offline` plugin. In order to do that, execute the following command:
-
-```bash
-serverless plugin install -n serverless-offline
-```
-
-It will add the `serverless-offline` plugin to `devDependencies` in `package.json` file as well as will add it to `plugins` in `serverless.yml`.
-
-After installation, you can start local emulation with:
+### Get Chat Entry Detail
 
 ```
-serverless offline
+GET /api/response/history/:id
 ```
 
-To learn more about the capabilities of `serverless-offline`, please refer to its [GitHub repository](https://github.com/dherault/serverless-offline).
+**Response:**
+```json
+{
+  "success": true,
+  "chatEntry": {
+    "question": "User question",
+    "response": "AI response",
+    "createdAt": "timestamp",
+    "id": "entry-id"
+  }
+}
+```
+
+### Clear Chat History
+
+```
+DELETE /api/response/history
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Chat history cleared successfully"
+}
+```
+
+## Vector Search Implementation
+
+The backend uses OpenAI's text-embedding-3-small model to generate vector embeddings for each chat entry. These embeddings are stored in Firestore alongside the chat data, enabling semantic search capabilities.
+
+When a user performs a search with the `search` parameter, the system:
+
+1. Generates embeddings for the search query
+2. Calculates cosine similarity between the query embeddings and stored chat entry embeddings
+3. Returns the most semantically similar results, sorted by relevance
+
+This allows for more natural and contextual searching beyond simple keyword matching.
+
+## Setup and Installation
+
+### Prerequisites
+
+- Node.js (v14+)
+- Firebase project with Firestore enabled
+- OpenAI API key
+
+### Installation
+
+1. Clone the repository
+2. Install dependencies:
+   ```
+   npm install
+   ```
+3. Set up environment variables in a `.env` file:
+   ```
+   apiKey=your-openai-api-key
+   PORT=3000
+   ```
+4. Place your Firebase service account key file in the root directory
+
+### Running the Application
+
+Development mode:
+```
+npm run server
+```
+
+Production mode:
+```
+npm run start
+```

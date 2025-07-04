@@ -130,3 +130,6 @@ dist
 .pnp.*
 .env
 example
+
+# npm package lock file
+laura-b7cb2-firebase-adminsdk-fbsvc-6d6395e624.json
