@@ -1,6 +1,7 @@
 const asyncHandler = require('express-async-handler');
-const { generateResponse, getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch } = require('../helpers/firestoreHelper');
-const { textToSpeech } = require('../helpers/audioHelper');
+const { getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch } = require('../helpers/firestoreHelper');
+const { generateResponse } = require('../helpers/responseHelper');
+const { textToSpeech, getVoiceIdFromEmotionTag } = require('../helpers/audioHelper');
 const { transcribeAudio } = require('../helpers/transcriptionHelper');
 const AiChat = require('../schemas/AiChat');
 const fs = require('fs');
@@ -32,16 +33,24 @@ const generateAIResponse = asyncHandler(async (req, res) => {
             });
         }
 
-        const textResponse = await generateResponse(userText, userId);
-        const audioBuffer = await textToSpeech(textResponse);
+        // Get response with emotion tag
+        const { response, emotionTag } = await generateResponse(userText, userId);
+        
+        // Get voice ID based on emotion tag
+        const voiceId = getVoiceIdFromEmotionTag(emotionTag);
+        
+        // Generate audio with the selected voice ID
+        const audioBuffer = await textToSpeech(response, voiceId);
 
         // Set response headers for JSON response
         res.setHeader('Content-Type', 'application/json');
 
-        // Send both text and audio response
+        // Send text, emotion tag, voice ID, and audio response
         res.status(200).json({
             success: true,
-            response: textResponse,
+            response: response,
+            emotionTag: emotionTag,
+            voiceId: voiceId,
             audio: audioBuffer.toString('base64')
         });
 
