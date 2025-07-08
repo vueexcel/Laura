@@ -179,26 +179,40 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
         id: Date.now().toString()
       };
       
-      // Generate embeddings for the question
-      try {
-        const questionEmbeddings = await generateEmbeddings(transcribedText);
-        newChatEntry.embeddings = questionEmbeddings;
-      } catch (embeddingError) {
-        console.error('Error generating embeddings:', embeddingError);
-        // Continue without embeddings if there's an error
-      }
+      // Generate embeddings for the question - temporarily commented out
+      // try {
+      //   const questionEmbeddings = await generateEmbeddings(transcribedText);
+      //   newChatEntry.embeddings = questionEmbeddings;
+      // } catch (embeddingError) {
+      //   console.error('Error generating embeddings:', embeddingError);
+      //   // Continue without embeddings if there's an error
+      // }
       
       // Update the chat array with the new entry
       await chatRef.update({
         chat: admin.firestore.FieldValue.arrayUnion(newChatEntry),
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
+      
+      // Return the response with the chat ID
+      return {
+        response: cleanResponse,
+        emotionTag: emotionTag,
+        id: newChatEntry.id
+      };
     } catch (error) {
       console.error('Error saving chat history:', error);
       // Continue even if saving history fails
     }
 
-    return { response: cleanResponse, emotionTag };
+    // If we reach here, it means there was an error saving to Firestore
+    // but we still want to return the response with a generated ID
+    const fallbackId = Date.now().toString();
+    return { 
+      response: cleanResponse, 
+      emotionTag,
+      id: fallbackId
+    };
   } catch (error) {
     console.error('Error generating response:', error);
     throw new Error('Failed to generate response: ' + error.message);
@@ -319,6 +333,8 @@ async function generateEmbeddings(text) {
  * @param {Object} chatEntry - The chat entry object
  * @returns {Promise<void>}
  */
+// Temporarily commented out
+/*
 async function addEmbeddingsToChatEntry(userId, chatEntry) {
   try {
     // Generate embeddings for the question
@@ -352,6 +368,13 @@ async function addEmbeddingsToChatEntry(userId, chatEntry) {
     // Continue even if adding embeddings fails
   }
 }
+*/
+
+// Placeholder function to avoid breaking code that calls this function
+async function addEmbeddingsToChatEntry(userId, chatEntry) {
+  console.log('Embeddings generation temporarily disabled');
+  return;
+}
 
 /**
  * Performs a semantic search on the user's chat history
@@ -360,10 +383,10 @@ async function addEmbeddingsToChatEntry(userId, chatEntry) {
  * @param {number} limit - Maximum number of results to return
  * @returns {Promise<Array>} - Array of matching chat entries
  */
+// Temporarily modified to handle disabled embeddings
 async function semanticSearch(userId, query, limit = 5) {
   try {
-    // Generate embeddings for the query
-    const queryEmbeddings = await generateEmbeddings(query);
+    console.log('Semantic search with embeddings temporarily disabled');
     
     // Get the user's chat history
     const chatRef = db.collection('aichats').doc(userId);
@@ -375,22 +398,22 @@ async function semanticSearch(userId, query, limit = 5) {
     
     const chatData = chatDoc.data();
     
-    // Filter chat entries that have embeddings
-    const entriesWithEmbeddings = chatData.chat.filter(entry => entry.embeddings);
-    
-    if (entriesWithEmbeddings.length === 0) {
-      return [];
-    }
-    
-    // Calculate cosine similarity between query and each chat entry
-    const results = entriesWithEmbeddings.map(entry => {
-      const similarity = calculateCosineSimilarity(queryEmbeddings, entry.embeddings);
-      return { ...entry, similarity };
+    // Since embeddings are disabled, perform a simple text search instead
+    const results = chatData.chat.filter(entry => {
+      // Simple text matching - check if query terms appear in the question or response
+      const queryTerms = query.toLowerCase().split(' ');
+      const questionText = entry.question.toLowerCase();
+      const responseText = entry.response.toLowerCase();
+      
+      // Check if any query term appears in the question or response
+      return queryTerms.some(term => 
+        questionText.includes(term) || responseText.includes(term)
+      );
     });
     
-    // Sort by similarity (highest first) and limit results
+    // Sort by recency (newest first) and limit results
     return results
-      .sort((a, b) => b.similarity - a.similarity)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
       .slice(0, limit);
   } catch (error) {
     console.error('Error performing semantic search:', error);
@@ -429,6 +452,145 @@ function calculateCosineSimilarity(vecA, vecB) {
   return dotProduct / (normA * normB);
 }
 
+/**
+ * Tags a chat entry as a "Moment" with a custom label and timestamp
+ * @param {string} userId - The user ID
+ * @param {string} chatId - The chat entry ID
+ * @param {Object} momentData - The moment data (label and timestamp)
+ * @returns {Promise<Object|null>} - The updated chat entry or null if not found
+ */
+async function tagChatEntryAsMoment(userId, chatId, momentData) {
+  try {
+    const chatRef = db.collection('aichats').doc(userId);
+    const chatDoc = await chatRef.get();
+    
+    if (!chatDoc.exists || !chatDoc.data().chat) {
+      return null;
+    }
+    
+    // Find the specific chat entry
+    const chatData = chatDoc.data();
+    const chatIndex = chatData.chat.findIndex(entry => entry.id === chatId);
+    
+    if (chatIndex === -1) {
+      return null;
+    }
+    
+    // Store moment data only as a single object
+    chatData.chat[chatIndex].momentData = {
+      moment: true,
+      label: momentData.label || '',
+      timestamp: momentData.timestamp || new Date().toISOString()
+    };
+    
+    // Remove individual properties if they exist
+    delete chatData.chat[chatIndex].moment;
+    delete chatData.chat[chatIndex].momentLabel;
+    delete chatData.chat[chatIndex].momentTimestamp;
+    
+    // Update the document
+    await chatRef.update({
+      chat: chatData.chat,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    
+    return chatData.chat[chatIndex];
+  } catch (error) {
+    console.error('Error tagging chat entry as moment:', error);
+    throw new Error('Failed to tag chat entry as moment: ' + error.message);
+  }
+}
+
+/**
+ * Gets all moments for a specific user
+ * @param {string} userId - The user ID
+ * @param {string} label - Optional label to filter moments by
+ * @returns {Promise<Array>} - Array of moment chat entries
+ */
+async function getMomentsForUser(userId, label = null) {
+  try {
+    const chatRef = db.collection('aichats').doc(userId);
+    const chatDoc = await chatRef.get();
+    
+    if (!chatDoc.exists || !chatDoc.data().chat) {
+      return [];
+    }
+    
+    // Filter chat entries that are marked as moments
+    const chatData = chatDoc.data();
+    let moments = chatData.chat.filter(entry => entry.momentData && entry.momentData.moment === true);
+    
+    // If label is provided, filter by label
+    if (label) {
+      moments = moments.filter(entry => 
+        entry.momentData && entry.momentData.label && 
+        entry.momentData.label.toLowerCase().includes(label.toLowerCase())
+      );
+    }
+    
+    // Sort by timestamp in momentData (newest first)
+    return moments.sort((a, b) => {
+      const timeA = a.momentData && a.momentData.timestamp ? new Date(a.momentData.timestamp) : new Date(a.createdAt);
+      const timeB = b.momentData && b.momentData.timestamp ? new Date(b.momentData.timestamp) : new Date(b.createdAt);
+      return timeB - timeA;
+    });
+  } catch (error) {
+    console.error('Error retrieving moments:', error);
+    throw new Error('Failed to retrieve moments: ' + error.message);
+  }
+}
+
+/**
+ * Migrates existing moments to use the new momentData format
+ * @param {string} userId - The user ID
+ * @returns {Promise<number>} - Number of migrated entries
+ */
+async function migrateMomentsToNewFormat(userId) {
+  try {
+    const chatRef = db.collection('aichats').doc(userId);
+    const chatDoc = await chatRef.get();
+    
+    if (!chatDoc.exists || !chatDoc.data().chat) {
+      return 0;
+    }
+    
+    const chatData = chatDoc.data();
+    let migratedCount = 0;
+    
+    // Find entries that use the old format (have moment property but no momentData)
+    chatData.chat.forEach(entry => {
+      if (entry.moment === true && !entry.momentData) {
+        // Create momentData object from individual properties
+        entry.momentData = {
+          moment: true,
+          label: entry.momentLabel || '',
+          timestamp: entry.momentTimestamp || entry.createdAt
+        };
+        
+        // Remove individual properties
+        delete entry.moment;
+        delete entry.momentLabel;
+        delete entry.momentTimestamp;
+        
+        migratedCount++;
+      }
+    });
+    
+    // Only update if we made changes
+    if (migratedCount > 0) {
+      await chatRef.update({
+        chat: chatData.chat,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
+    
+    return migratedCount;
+  } catch (error) {
+    console.error('Error migrating moments to new format:', error);
+    throw new Error('Failed to migrate moments: ' + error.message);
+  }
+}
+
 module.exports = { 
   generateResponse, 
   getChatHistoryForUser, 
@@ -436,5 +598,8 @@ module.exports = {
   getChatEntryById,
   generateEmbeddings,
   addEmbeddingsToChatEntry,
-  semanticSearch
+  semanticSearch,
+  tagChatEntryAsMoment,
+  getMomentsForUser,
+  migrateMomentsToNewFormat
 };

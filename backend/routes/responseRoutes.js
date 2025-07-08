@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
-const { generateAIResponse, getChatHistory, clearChatHistory, getChatEntryDetail } = require('../controllers/responseController');
+const { generateAIResponse, getChatHistory, clearChatHistory, getChatEntryDetail, tagMoment, getMoments, migrateMoments } = require('../controllers/responseController');
 const { protect } = require('../middleware/authMiddleware');
 
 // Configure multer storage for audio files
@@ -28,5 +28,10 @@ router.post('/generate', upload.single('audio'), generateAIResponse);
 router.get('/history', getChatHistory);
 router.get('/history/:id', getChatEntryDetail);
 router.delete('/history', clearChatHistory);
+
+// New routes for moments feature
+router.post('/moments/migrate', migrateMoments); // This must come before the :id route
+router.post('/moments/:id', tagMoment);
+router.get('/moments', getMoments);
 
 module.exports = router;
