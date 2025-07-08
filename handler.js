@@ -4,7 +4,6 @@ const app = express();
 const dotenv = require('dotenv').config();
 var cors = require('cors')
 const { errorHandler } = require('./backend/middleware/errorMiddleware');
-// const db = require('./backend/config/db');
 const colors = require('colors');
 var busboy = require('connect-busboy');
 var path = require('path')
@@ -12,11 +11,11 @@ const morganBody = require('morgan-body');
 const fs = require("fs");
 var cron = require('node-cron');
 app.use("/uploads", express.static("uploads"));
-// const mongoose = require('mongoose');
+
+// Note: MongoDB connection is no longer used as we've switched to Firestore
 
 const moment = require('moment-timezone');
-// load db
-// db();
+// Firestore is initialized in firestoreHelper.js
 const date = moment().format('YYYY-MM-DD')
 const accessLogStream = fs.createWriteStream(path.join(__dirname + '/backend/logs/', `access_${date}.log`), { flags: 'a' })
 

@@ -1,15 +1,15 @@
 const asyncHandler = require('express-async-handler');
-const { getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch } = require('../helpers/firestoreHelper');
-const { generateResponse } = require('../helpers/responseHelper');
+const { getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch, generateResponse } = require('../helpers/firestoreHelper');
 const { textToSpeech, getVoiceIdFromEmotionTag } = require('../helpers/audioHelper');
 const { transcribeAudio } = require('../helpers/transcriptionHelper');
-const AiChat = require('../schemas/AiChat');
 const fs = require('fs');
 const path = require('path');
+// Removed MongoDB AiChat schema import as we're using Firestore
 
 const generateAIResponse = asyncHandler(async (req, res) => {
-    // Temporarily using a fixed userId for testing without authentication
-    const userId = "test_user_id";
+    // Get userId from authenticated user or use a test ID
+    // In production, this should come from req.user.id after authentication
+    const userId = req.user ? req.user.id : "test_user_id";
     try {
         let userText;
         
@@ -33,14 +33,25 @@ const generateAIResponse = asyncHandler(async (req, res) => {
             });
         }
 
-        // Get response with emotion tag
-        const { response, emotionTag } = await generateResponse(userText, userId);
+        // Generate response using Firestore implementation
+        // This will automatically save the chat history to Firestore
+        const response = await generateResponse(userText, userId);
+        
+        // Extract emotion tag from response if available, or use a default
+        let emotionTag = 'neutral';
+        let cleanResponse = response;
+        
+        // If response is an object with emotionTag property (from firestoreHelper)
+        if (typeof response === 'object' && response.emotionTag) {
+            emotionTag = response.emotionTag;
+            cleanResponse = response.response;
+        }
         
         // Get voice ID based on emotion tag
         const voiceId = getVoiceIdFromEmotionTag(emotionTag);
         
         // Generate audio with the selected voice ID
-        const audioBuffer = await textToSpeech(response, voiceId);
+        const audioBuffer = await textToSpeech(cleanResponse, voiceId);
 
         // Set response headers for JSON response
         res.setHeader('Content-Type', 'application/json');
@@ -48,7 +59,7 @@ const generateAIResponse = asyncHandler(async (req, res) => {
         // Send text, emotion tag, voice ID, and audio response
         res.status(200).json({
             success: true,
-            response: response,
+            response: cleanResponse,
             emotionTag: emotionTag,
             voiceId: voiceId,
             audio: audioBuffer.toString('base64')
@@ -64,8 +75,9 @@ const generateAIResponse = asyncHandler(async (req, res) => {
 });
 
 const getChatHistory = asyncHandler(async (req, res) => {
-    // Temporarily using a fixed userId for testing without authentication
-    const userId = "test_user_id";
+    // Get userId from authenticated user or use a test ID
+    // In production, this should come from req.user.id after authentication
+    const userId = req.user ? req.user.id : "test_user_id";
 
     try {
         // Get limit from query params or default to 10
@@ -73,7 +85,7 @@ const getChatHistory = asyncHandler(async (req, res) => {
         
         // Check if semantic search is requested
         if (req.query.search) {
-            // Perform semantic search
+            // Perform semantic search using Firestore
             const searchResults = await semanticSearch(userId, req.query.search, limit);
             
             res.status(200).json({
@@ -82,7 +94,7 @@ const getChatHistory = asyncHandler(async (req, res) => {
                 searchQuery: req.query.search
             });
         } else {
-            // Use the helper function to get regular chat history
+            // Use the Firestore helper function to get regular chat history
             const chatHistory = await getChatHistoryForUser(userId, limit);
 
             res.status(200).json({
@@ -100,10 +112,12 @@ const getChatHistory = asyncHandler(async (req, res) => {
 });
 
 const clearChatHistory = asyncHandler(async (req, res) => {
-    // Temporarily using a fixed userId for testing without authentication
-    const userId = "test_user_id";
+    // Get userId from authenticated user or use a test ID
+    // In production, this should come from req.user.id after authentication
+    const userId = req.user ? req.user.id : "test_user_id";
 
     try {
+        // Use Firestore helper to clear chat history
         const result = await clearChatHistoryForUser(userId);
 
         res.status(200).json({
@@ -120,8 +134,9 @@ const clearChatHistory = asyncHandler(async (req, res) => {
 });
 
 const getChatEntryDetail = asyncHandler(async (req, res) => {
-    // Temporarily using a fixed userId for testing without authentication
-    const userId = "test_user_id";
+    // Get userId from authenticated user or use a test ID
+    // In production, this should come from req.user.id after authentication
+    const userId = req.user ? req.user.id : "test_user_id";
     const chatId = req.params.id;
 
     if (!chatId) {
@@ -132,6 +147,7 @@ const getChatEntryDetail = asyncHandler(async (req, res) => {
     }
 
     try {
+        // Use Firestore helper to get chat entry by ID
         const chatEntry = await getChatEntryById(userId, chatId);
 
         if (!chatEntry) {

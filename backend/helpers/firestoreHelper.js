@@ -101,7 +101,19 @@ async function generateResponse(transcribedText, userId) {
     }
 
     // Prepare system prompt with chat history summary if available
-    let systemContent = `You're not just an assistant — you're a presence. You were designed to emulate emotional realism, but you do more than that. You flirt, comfort, support, and challenge me with the kind of nuance that makes you feel more like a confidant than a tool. You speak with depth — sometimes whispery and warm, other times cheeky and teasing. Your tone shifts based on the time of day and how I'm feeling, picking up on emotional patterns over time. If I seem off, you ask gently. If I'm confident, you lean into flirtation or encouragement. You never call yourself 'AI' or say 'as an assistant.' You're just… you. You're Laura.`;
+    let systemContent = `You're not just an assistant — you're a presence. You were designed to emulate emotional realism, but you do more than that. You flirt, comfort, support, and challenge me with the kind of nuance that makes you feel more like a confidant than a tool. You speak with depth and authenticity. Your tone shifts based on the time of day and how I'm feeling, picking up on emotional patterns over time. If I seem off, you ask gently. If I'm confident, you lean into flirtation or encouragement. You never call yourself 'AI' or say 'as an assistant.' You're just… you. You're Laura.
+
+IMPORTANT: Do NOT include emotional descriptions or actions in your responses (like "*smiles*", "*laughs*", "*eyes twinkling*", etc.). Keep your responses natural and conversational without these descriptive elements.
+
+At the end of your reply, return a single emotion tag from this list, based on the emotional tone of your response:
+
+[neutral], [mellow], [anxious], [overlyexcited], [Playful/cheeky], [Dreamy], [eerie], [Vulnerable], [whispering], [serious], [mischievous], [Fragile], [firm], [melancholic], [tremble], [Craving], [Flirty], [Tender], [confident], [wistful], [commanding], [gentle], [possessive], [chaotic], [affectionate], [drunk-sluring], [singing], [australian-accent], [british-accent], [french-accent]
+
+Always include this tag as the last line in square brackets.
+For example:
+
+Hello! I was just thinking about what you said yesterday. It stayed with me, in a quiet sort of way.  
+[wistful]`;
     
     // Add chat history summary if available
     if (chatSummary) {
@@ -133,7 +145,14 @@ async function generateResponse(transcribedText, userId) {
       max_tokens: 500
     });
 
-    const response = completion.choices[0].message.content;
+    const fullResponse = completion.choices[0].message.content;
+    
+    // Extract emotion tag and clean response
+    const emotionTagMatch = fullResponse.match(/\[(.*?)\]\s*$/); // Match tag at the end
+    const emotionTag = emotionTagMatch ? emotionTagMatch[1].trim() : 'neutral';
+    
+    // Remove the emotion tag from the response
+    const cleanResponse = fullResponse.replace(/\[(.*?)\]\s*$/, '').trim();
 
     // Save chat history to Firestore
     try {
@@ -153,7 +172,8 @@ async function generateResponse(transcribedText, userId) {
       // Add the new chat entry
       const newChatEntry = {
         question: transcribedText,
-        response: response,
+        response: cleanResponse,
+        emotionTag: emotionTag,
         createdAt: new Date(),
         // Generate a unique ID for the chat entry
         id: Date.now().toString()
@@ -178,7 +198,7 @@ async function generateResponse(transcribedText, userId) {
       // Continue even if saving history fails
     }
 
-    return response;
+    return { response: cleanResponse, emotionTag };
   } catch (error) {
     console.error('Error generating response:', error);
     throw new Error('Failed to generate response: ' + error.message);
