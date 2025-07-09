@@ -34,6 +34,7 @@ app.use('/api/product', cors(), require('./backend/routes/productRoutes'));
 app.use('/api/file', cors(), require('./backend/routes/fileHandlingRouter'));
 app.use('/api/transcription', cors(), require('./backend/routes/transcriptionRoutes'));
 app.use('/api/response', cors(), require('./backend/routes/responseRoutes'));
+app.use('/api/voice', cors(), require('./backend/routes/voiceRoutes'));
 
 app.use(errorHandler);
 app.use((req, res, next) => {
