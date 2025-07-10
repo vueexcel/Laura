@@ -2,6 +2,7 @@ const asyncHandler = require('express-async-handler');
 const { generateResponse, getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch, tagChatEntryAsMoment, getMomentsForUser, migrateMomentsToNewFormat } = require('../helpers/firestoreHelper');
 const { textToSpeech, getVoiceIdFromEmotionTag } = require('../helpers/audioHelper');
 const { transcribeAudio } = require('../helpers/transcriptionHelper');
+// No longer need to import getEmotionState since we're not including it in the response
 const fs = require('fs');
 const path = require('path');
 // Removed MongoDB AiChat schema import as we're using Firestore

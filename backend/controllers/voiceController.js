@@ -1,5 +1,6 @@
 const asyncHandler = require('express-async-handler');
 const { textToSpeech, getVoiceIdFromEmotionTag } = require('../helpers/audioHelper');
+const { updateEmotionState, getEmotionAwarePrompt } = require('../helpers/emotionMemoryHelper');
 const admin = require('firebase-admin');
 const { OpenAI } = require('openai');
 require('dotenv').config();
@@ -35,20 +36,22 @@ const generateComfortResponse = asyncHandler(async (req, res) => {
         const openai = new OpenAI({
             apiKey: process.env.apiKey
         });
-
-        // Create system prompt for comfort response
-        const systemPrompt = `You are a calming presence designed to help people relax and find comfort. 
+        
+        // Update the emotion state based on the user's input
+        await updateEmotionState(userId, text);
+        
+        // Create base system prompt for comfort response
+        const baseSystemPrompt = `You are a calming presence designed to help people relax and find comfort. 
 
 Respond in a calm, gentle, and soothing tone. Speak slowly and clearly, as if guiding someone through anxiety or helping them relax before sleep. Start with a short breathwork technique like 4-7-8 breathing or box breathing. Follow it with one comforting line or affirmation. Keep responses minimal, warm, and emotionally supportive—like a quiet, caring voice at bedtime.
 
 At the end of your reply, return a single emotion tag from this list, based on the emotional tone of your response:
 [gentle], [mellow], [tender], [whispering], [dreamy]
 
-Always include this tag as the last line in square brackets.
-For example:
-
-Let's take a moment to breathe together. Inhale for 4 counts, hold for 7, exhale for 8. Again, inhale... hold... and release. You're doing wonderfully, and this moment of peace is yours to keep.
-[gentle]`;
+Always include this tag as the last line in square brackets.`;
+        
+        // Get the emotion-aware system prompt
+        const systemPrompt = await getEmotionAwarePrompt(userId, baseSystemPrompt);
 
         // Create messages array
         const messages = [
@@ -78,6 +81,9 @@ Let's take a moment to breathe together. Inhale for 4 counts, hold for 7, exhale
         
         // Remove the emotion tag from the response
         const cleanResponse = fullResponse.replace(/\[(.*?)\]\s*$/, '').trim();
+        
+        // Update the emotion state based on the response
+        await updateEmotionState(userId, cleanResponse, emotionTag);
 
         // Save chat entry to Firestore
         try {
@@ -117,7 +123,7 @@ Let's take a moment to breathe together. Inhale for 4 counts, hold for 7, exhale
             
             // Generate audio with the selected voice ID
             const audioBuffer = await textToSpeech(cleanResponse, voiceId);
-
+            
             // Send response
             res.status(200).json({
                 success: true,
@@ -139,7 +145,7 @@ Let's take a moment to breathe together. Inhale for 4 counts, hold for 7, exhale
             
             // Generate audio with the selected voice ID
             const audioBuffer = await textToSpeech(cleanResponse, voiceId);
-
+            
             // Still return a response even if saving fails
             res.status(200).json({
                 success: true,

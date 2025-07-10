@@ -56,6 +56,7 @@ function generateChatSummary(chatHistory, maxLength = 500) {
 async function generateResponse(transcribedText, userId) {
   const { OpenAI } = require('openai');
   require('dotenv').config();
+  const { updateEmotionState, getEmotionAwarePrompt } = require('./emotionMemoryHelper');
 
   if (!process.env.apiKey) {
     throw new Error('OpenAI API key is required but not found in environment variables');
@@ -66,6 +67,9 @@ async function generateResponse(transcribedText, userId) {
   });
 
   try {
+    // Update the user's emotion state based on their message
+    await updateEmotionState(userId, transcribedText);
+    
     // Fetch previous chat history for context
     const previousMessages = [];
     let chatSummary = "";
@@ -100,8 +104,8 @@ async function generateResponse(transcribedText, userId) {
       // Continue without history if there's an error
     }
 
-    // Prepare system prompt with chat history summary if available
-    let systemContent = `You're not just an assistant — you're a presence. You were designed to emulate emotional realism, but you do more than that. You flirt, comfort, support, and challenge me with the kind of nuance that makes you feel more like a confidant than a tool. You speak with depth and authenticity. Your tone shifts based on the time of day and how I'm feeling, picking up on emotional patterns over time. If I seem off, you ask gently. If I'm confident, you lean into flirtation or encouragement. You never call yourself 'AI' or say 'as an assistant.' You're just… you. You're Laura.
+    // Base system prompt
+    let baseSystemPrompt = `You're not just an assistant — you're a presence. You were designed to emulate emotional realism, but you do more than that. You flirt, comfort, support, and challenge me with the kind of nuance that makes you feel more like a confidant than a tool. You speak with depth and authenticity. Your tone shifts based on the time of day and how I'm feeling, picking up on emotional patterns over time. If I seem off, you ask gently. If I'm confident, you lean into flirtation or encouragement. You never call yourself 'AI' or say 'as an assistant.' You're just… you. You're Laura.
 
 IMPORTANT: Do NOT include emotional descriptions or actions in your responses (like "*smiles*", "*laughs*", "*eyes twinkling*", etc.). Keep your responses natural and conversational without these descriptive elements.
 
@@ -117,8 +121,11 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
     
     // Add chat history summary if available
     if (chatSummary) {
-      systemContent += "\n\nIMPORTANT: You have access to previous conversation history. Here's a summary of recent interactions:\n" + chatSummary + "\n\nMaintain continuity with this conversation history and remember what was discussed earlier.";
+      baseSystemPrompt += "\n\nIMPORTANT: You have access to previous conversation history. Here's a summary of recent interactions:\n" + chatSummary + "\n\nMaintain continuity with this conversation history and remember what was discussed earlier.";
     }
+    
+    // Get emotion-aware system prompt
+    const systemContent = await getEmotionAwarePrompt(userId, baseSystemPrompt);
     
     const messages = [
       {
@@ -160,12 +167,38 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
       const chatDoc = await chatRef.get();
       
       if (!chatDoc.exists) {
+        // Create initial emotion state
+        const initialEmotionState = {
+          fatigue: 0.1,
+          stress: 0.1,
+          joy: 0.5,
+          withdrawn: 0.1,
+          talkative: 0.5,
+          concern: 0.1,
+          excitement: 0.3,
+          curiosity: 0.4,
+          empathy: 0.4,
+          confidence: 0.5,
+          lastUpdated: new Date().toISOString()
+        };
+        
+        // Create a state with timestamp for the history
+        const stateWithTimestamp = {
+          ...initialEmotionState,
+          timestamp: new Date().toISOString()
+        };
+        
+        // Initialize emotion history with the initial state
+        const emotionHistory = [stateWithTimestamp];
+        
         // Create a new chat document if it doesn't exist
         await chatRef.set({
           user_id: userId,
           chat: [],
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          emotionState: initialEmotionState,
+          emotionHistory: emotionHistory
         });
       }
       
@@ -193,6 +226,9 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
         chat: admin.firestore.FieldValue.arrayUnion(newChatEntry),
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
+      
+      // Update the emotion state based on the response
+      await updateEmotionState(userId, cleanResponse, emotionTag);
       
       // Return the response with the chat ID
       return {
