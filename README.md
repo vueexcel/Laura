@@ -8,6 +8,8 @@ This is the backend API for Laura AI, a conversational AI assistant that provide
 - **Audio Support**: Accepts audio input and provides text-to-speech output
 - **Chat History**: Stores conversation history for context and retrieval
 - **Vector Search**: Implements semantic search using embeddings for more accurate query results
+- **Emotion Memory System**: Tracks and responds to user emotions over time
+- **User Behavior Tracking**: Monitors usage patterns to personalize interactions
 
 ## API Endpoints
 
@@ -27,6 +29,9 @@ POST /api/response/generate
 {
   "success": true,
   "response": "Text response from AI",
+  "emotionTag": "mellow",
+  "voiceId": "voice_id_here",
+  "id": "chat_entry_id",
   "audio": "base64-encoded audio response"
 }
 ```
@@ -103,6 +108,26 @@ DELETE /api/response/history
 {
   "success": true,
   "message": "Chat history cleared successfully"
+}
+```
+
+### Get User Behavior Tracking
+
+```
+GET /api/response/behavior
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "usageTracking": {
+    "late_night": false,
+    "burst_usage": false,
+    "session_gap": "3 days",
+    "last_open": "2025-07-12T04:45:00Z",
+    "open_duration_minutes": 15
+  }
 }
 ```
 

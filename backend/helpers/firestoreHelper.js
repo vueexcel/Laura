@@ -124,8 +124,74 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
       baseSystemPrompt += "\n\nIMPORTANT: You have access to previous conversation history. Here's a summary of recent interactions:\n" + chatSummary + "\n\nMaintain continuity with this conversation history and remember what was discussed earlier.";
     }
     
+    // Get emotion-aware system prompt with emotion history and usage history
+    let systemPromptWithHistory = baseSystemPrompt;
+    
+    // Add chat history summary if available
+    if (chatSummary) {
+      systemPromptWithHistory += "\n\nIMPORTANT: You have access to previous conversation history. Here's a summary of recent interactions:\n" + chatSummary + "\n\nMaintain continuity with this conversation history and remember what was discussed earlier.";
+    }
+    
     // Get emotion-aware system prompt
-    const systemContent = await getEmotionAwarePrompt(userId, baseSystemPrompt);
+    let systemContent = await getEmotionAwarePrompt(userId, systemPromptWithHistory);
+    
+    // Add emotion history and usage history data to the prompt
+    try {
+      const chatRef = db.collection('aichats').doc(userId);
+      const chatDoc = await chatRef.get();
+      
+      if (chatDoc.exists) {
+        const chatData = chatDoc.data();
+        
+        // Add emotion history if available
+        if (chatData.emotionHistory && chatData.emotionHistory.length > 0) {
+          // Get the last 3 emotion states for context
+          const recentEmotionHistory = chatData.emotionHistory.slice(-3);
+          
+          let emotionHistoryContext = "\n\nEMOTION HISTORY: I have tracked the user's emotional patterns over time. Here are the recent emotional states:\n";
+          
+          recentEmotionHistory.forEach((state, index) => {
+            const timestamp = new Date(state.timestamp);
+            emotionHistoryContext += `\n${index + 1}. Time: ${timestamp.toLocaleString()}, Key emotions: `;
+            
+            // Extract top 3 emotions by value
+            const emotions = Object.entries(state)
+              .filter(([key, value]) => key !== 'timestamp' && key !== 'lastUpdated' && typeof value === 'number')
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 3);
+            
+            emotionHistoryContext += emotions.map(([emotion, value]) => `${emotion}: ${value.toFixed(2)}`).join(', ');
+          });
+          
+          systemContent += emotionHistoryContext;
+        }
+        
+        // Add usage history if available
+        if (chatData.usageTracking && chatData.usageTracking.usage_history && chatData.usageTracking.usage_history.length > 0) {
+          // Get the last 3 usage entries for context
+          const recentUsageHistory = chatData.usageTracking.usage_history.slice(-3);
+          
+          let usageHistoryContext = "\n\nUSAGE PATTERNS: I have information about the user's app usage patterns:\n";
+          
+          // Add current usage data
+          usageHistoryContext += `\n- Late night usage: ${chatData.usageTracking.late_night ? 'Yes' : 'No'}`;
+          usageHistoryContext += `\n- Burst usage (frequent opens): ${chatData.usageTracking.burst_usage ? 'Yes' : 'No'}`;
+          usageHistoryContext += `\n- Time since last conversation: ${chatData.usageTracking.session_gap}`;
+          
+          // Add recent usage history
+          usageHistoryContext += "\n\nRecent usage history:";
+          recentUsageHistory.forEach((usage, index) => {
+            const openTime = new Date(usage.open_time);
+            usageHistoryContext += `\n${index + 1}. Time: ${openTime.toLocaleString()}, Late night: ${usage.late_night ? 'Yes' : 'No'}, Gap: ${usage.session_gap}`;
+          });
+          
+          systemContent += usageHistoryContext;
+        }
+      }
+    } catch (error) {
+      console.error('Error adding history data to prompt:', error);
+      // Continue without history data if there's an error
+    }
     
     const messages = [
       {
@@ -627,6 +693,194 @@ async function migrateMomentsToNewFormat(userId) {
   }
 }
 
+/**
+ * Updates user behavior tracking data based on app usage patterns
+ * @param {string} userId - The user ID
+ * @param {Date} currentOpenTime - The current time when the app was opened (defaults to now)
+ * @returns {Promise<Object>} - The updated usage tracking data
+ */
+async function updateUserBehaviorTracking(userId, currentOpenTime = new Date()) {
+  try {
+    const chatRef = db.collection('aichats').doc(userId);
+    const chatDoc = await chatRef.get();
+    
+    // Default usage tracking structure
+    let usageTracking = {
+      late_night: false,
+      burst_usage: false,
+      session_gap: "0 days",
+      last_open: currentOpenTime.toISOString(),
+      open_duration_minutes: 0, // Will be calculated based on real data
+      usage_history: [] // Array to store historical usage data
+    };
+    
+    // If document exists, get current tracking data or initialize
+    if (chatDoc.exists) {
+      const chatData = chatDoc.data();
+      
+      // Use existing tracking data if available, otherwise use default
+      if (chatData.usageTracking) {
+        usageTracking = { ...usageTracking, ...chatData.usageTracking };
+      }
+      
+      // Check if usage_history exists, if not initialize it
+      if (!usageTracking.usage_history) {
+        usageTracking.usage_history = [];
+      }
+      
+      // Calculate session gap if last_open exists
+      if (usageTracking.last_open) {
+        const lastOpenDate = new Date(usageTracking.last_open);
+        const diffTime = Math.abs(currentOpenTime - lastOpenDate);
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        usageTracking.session_gap = `${diffDays} days`;
+      }
+      
+      // Detect late-night usage (between 12:00 AM and 5:00 AM local time)
+      const hours = currentOpenTime.getHours();
+      usageTracking.late_night = (hours >= 0 && hours < 5);
+      
+      // Detect burst usage (more than 3 opens within 1 hour)
+      const oneHourAgo = new Date(currentOpenTime.getTime() - (60 * 60 * 1000));
+      const recentOpens = usageTracking.usage_history.filter(entry => {
+        const entryTime = new Date(entry.open_time);
+        return entryTime >= oneHourAgo && entryTime <= currentOpenTime;
+      });
+      
+      usageTracking.burst_usage = (recentOpens.length >= 3);
+      
+      // Update last_open time
+      usageTracking.last_open = currentOpenTime.toISOString();
+      
+      // Calculate open_duration_minutes based on real data
+      // If there are previous sessions, calculate the average duration
+      if (usageTracking.usage_history.length > 0) {
+        // Get the last 5 sessions or all if less than 5
+        const recentSessions = usageTracking.usage_history.slice(-5);
+        let totalDuration = 0;
+        let sessionCount = 0;
+        
+        // Calculate the average duration of recent sessions
+        for (let i = 0; i < recentSessions.length; i++) {
+          if (recentSessions[i].duration_minutes) {
+            totalDuration += recentSessions[i].duration_minutes;
+            sessionCount++;
+          }
+        }
+        
+        // If we have previous session durations, use their average
+        if (sessionCount > 0) {
+          usageTracking.open_duration_minutes = Math.round(totalDuration / sessionCount);
+        } else {
+          // Default to 10 minutes if no previous data
+          usageTracking.open_duration_minutes = 10;
+        }
+      } else {
+        // Default to 10 minutes for first-time users
+        usageTracking.open_duration_minutes = 10;
+      }
+      
+      // Add current session to usage history
+      usageTracking.usage_history.push({
+        open_time: currentOpenTime.toISOString(),
+        late_night: usageTracking.late_night,
+        session_gap: usageTracking.session_gap,
+        duration_minutes: usageTracking.open_duration_minutes // Store the calculated duration
+      });
+      
+      // Limit history to last 50 entries
+      if (usageTracking.usage_history.length > 50) {
+        usageTracking.usage_history = usageTracking.usage_history.slice(-50);
+      }
+      
+      // Update the document with new tracking data
+      await chatRef.update({
+        usageTracking: usageTracking,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    } else {
+      // If document doesn't exist, create it with initial tracking data
+      await chatRef.set({
+        user_id: userId,
+        chat: [],
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        usageTracking: {
+          ...usageTracking,
+          usage_history: [{
+            open_time: currentOpenTime.toISOString(),
+            late_night: usageTracking.late_night,
+            session_gap: "0 days"
+          }]
+        }
+      });
+    }
+    
+    return usageTracking;
+  } catch (error) {
+    console.error('Error updating user behavior tracking:', error);
+    throw new Error('Failed to update user behavior tracking: ' + error.message);
+  }
+}
+
+/**
+ * Gets the current user behavior tracking data
+ * @param {string} userId - The user ID
+ * @returns {Promise<Object>} - The current usage tracking data
+ */
+async function getUserBehaviorTracking(userId) {
+  try {
+    const chatRef = db.collection('aichats').doc(userId);
+    const chatDoc = await chatRef.get();
+    
+    if (!chatDoc.exists || !chatDoc.data().usageTracking) {
+      // Return default structure if no tracking data exists
+      return {
+        late_night: false,
+        burst_usage: false,
+        session_gap: "0 days",
+        last_open: new Date().toISOString(),
+        open_duration_minutes: 10, // Default for new users
+        usage_history: []
+      };
+    }
+    
+    const usageTracking = chatDoc.data().usageTracking;
+    
+    // Ensure open_duration_minutes is calculated based on real data
+    if (usageTracking.usage_history && usageTracking.usage_history.length > 0) {
+      // Get the last 5 sessions or all if less than 5
+      const recentSessions = usageTracking.usage_history.slice(-5);
+      let totalDuration = 0;
+      let sessionCount = 0;
+      
+      // Calculate the average duration of recent sessions
+      for (let i = 0; i < recentSessions.length; i++) {
+        if (recentSessions[i].duration_minutes) {
+          totalDuration += recentSessions[i].duration_minutes;
+          sessionCount++;
+        }
+      }
+      
+      // If we have previous session durations, use their average
+      if (sessionCount > 0) {
+        usageTracking.open_duration_minutes = Math.round(totalDuration / sessionCount);
+      } else if (!usageTracking.open_duration_minutes) {
+        // Default to 10 minutes if no previous data and no existing value
+        usageTracking.open_duration_minutes = 10;
+      }
+    } else if (!usageTracking.open_duration_minutes) {
+      // Default to 10 minutes for first-time users with no history
+      usageTracking.open_duration_minutes = 10;
+    }
+    
+    return usageTracking;
+  } catch (error) {
+    console.error('Error retrieving user behavior tracking:', error);
+    throw new Error('Failed to retrieve user behavior tracking: ' + error.message);
+  }
+}
+
 module.exports = { 
   generateResponse, 
   getChatHistoryForUser, 
@@ -637,5 +891,7 @@ module.exports = {
   semanticSearch,
   tagChatEntryAsMoment,
   getMomentsForUser,
-  migrateMomentsToNewFormat
+  migrateMomentsToNewFormat,
+  updateUserBehaviorTracking,
+  getUserBehaviorTracking
 };

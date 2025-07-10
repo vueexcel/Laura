@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
-const { generateAIResponse, getChatHistory, clearChatHistory, getChatEntryDetail, tagMoment, getMoments, migrateMoments } = require('../controllers/responseController');
+const { generateAIResponse, getChatHistory, clearChatHistory, getChatEntryDetail, tagMoment, getMoments, migrateMoments, getUserBehavior } = require('../controllers/responseController');
 const { protect } = require('../middleware/authMiddleware');
 
 // Configure multer storage for audio files
@@ -33,5 +33,8 @@ router.delete('/history', clearChatHistory);
 router.post('/moments/migrate', migrateMoments); // This must come before the :id route
 router.post('/moments/:id', tagMoment);
 router.get('/moments', getMoments);
+
+// User behavior tracking route
+router.get('/behavior', getUserBehavior);
 
 module.exports = router;

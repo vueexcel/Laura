@@ -1,5 +1,5 @@
 const asyncHandler = require('express-async-handler');
-const { generateResponse, getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch, tagChatEntryAsMoment, getMomentsForUser, migrateMomentsToNewFormat } = require('../helpers/firestoreHelper');
+const { generateResponse, getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch, tagChatEntryAsMoment, getMomentsForUser, migrateMomentsToNewFormat, updateUserBehaviorTracking, getUserBehaviorTracking } = require('../helpers/firestoreHelper');
 const { textToSpeech, getVoiceIdFromEmotionTag } = require('../helpers/audioHelper');
 const { transcribeAudio } = require('../helpers/transcriptionHelper');
 // No longer need to import getEmotionState since we're not including it in the response
@@ -12,6 +12,10 @@ const generateAIResponse = asyncHandler(async (req, res) => {
     // In production, this should come from req.user.id after authentication
     const userId = req.user ? req.user.id : "test_user_id";
     try {
+        // Track user behavior when API is accessed
+        const currentOpenTime = new Date();
+        const usageTracking = await updateUserBehaviorTracking(userId, currentOpenTime);
+        
         let userText;
         
         // Check if audio file is provided in the request
@@ -59,7 +63,7 @@ const generateAIResponse = asyncHandler(async (req, res) => {
         // Set response headers for JSON response
         res.setHeader('Content-Type', 'application/json');
 
-        // Send text, emotion tag, voice ID, chat ID, and audio response
+        // Send text, emotion tag, voice ID, chat ID, and audio response (without usageTracking)
         res.status(200).json({
             success: true,
             response: cleanResponse,
@@ -284,6 +288,36 @@ const migrateMoments = asyncHandler(async (req, res) => {
     }
 });
 
+/**
+ * Gets the user behavior tracking data
+ */
+const getUserBehavior = asyncHandler(async (req, res) => {
+    // Get userId from authenticated user or use a test ID
+    const userId = req.user ? req.user.id : "test_user_id";
+
+    try {
+        // Get the user behavior tracking data
+        const usageTracking = await getUserBehaviorTracking(userId);
+
+        res.status(200).json({
+            success: true,
+            usageTracking: {
+                late_night: usageTracking.late_night,
+                burst_usage: usageTracking.burst_usage,
+                session_gap: usageTracking.session_gap,
+                last_open: usageTracking.last_open,
+                open_duration_minutes: usageTracking.open_duration_minutes
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching user behavior tracking:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Failed to fetch user behavior tracking'
+        });
+    }
+});
+
 module.exports = { 
     generateAIResponse, 
     getChatHistory, 
@@ -291,5 +325,6 @@ module.exports = {
     getChatEntryDetail,
     tagMoment,
     getMoments,
-    migrateMoments
+    migrateMoments,
+    getUserBehavior
 };
