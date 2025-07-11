@@ -1,5 +1,7 @@
 const admin = require('firebase-admin');
 const path = require('path');
+require('dotenv').config();
+const { OpenAI } = require('openai');
 
 // Initialize Firebase Admin SDK with service account
 const serviceAccount = require(path.join(__dirname, '../../laura-b7cb2-firebase-adminsdk-fbsvc-6d6395e624.json'));
@@ -13,6 +15,14 @@ if (!admin.apps.length) {
 
 // Get Firestore instance
 const db = admin.firestore();
+
+if (!process.env.apiKey) {
+  throw new Error('OpenAI API key is required but not found in environment variables');
+}
+
+const openai = new OpenAI({
+  apiKey: process.env.apiKey
+});
 
 /**
  * Generates a summary of recent chat history for context
@@ -54,17 +64,7 @@ function generateChatSummary(chatHistory, maxLength = 500) {
  * @returns {Promise<string>} - The generated response
  */
 async function generateResponse(transcribedText, userId) {
-  const { OpenAI } = require('openai');
-  require('dotenv').config();
   const { updateEmotionState, getEmotionAwarePrompt } = require('./emotionMemoryHelper');
-
-  if (!process.env.apiKey) {
-    throw new Error('OpenAI API key is required but not found in environment variables');
-  }
-
-  const openai = new OpenAI({
-    apiKey: process.env.apiKey
-  });
 
   try {
     // Update the user's emotion state based on their message
@@ -130,6 +130,51 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
     // Add chat history summary if available
     if (chatSummary) {
       systemPromptWithHistory += "\n\nIMPORTANT: You have access to previous conversation history. Here's a summary of recent interactions:\n" + chatSummary + "\n\nMaintain continuity with this conversation history and remember what was discussed earlier.";
+    }
+    
+    // Add user preferences if available
+    try {
+      const preferences = await getUserPreferences(userId);
+      
+      if (preferences && Object.keys(preferences).length > 1) { // More than just lastUpdated
+        let preferencesContext = "\n\nUSER PREFERENCES: I have information about the user's preferences that might be relevant to this conversation:\n";
+        
+        // Add food preferences if available
+        if (preferences.foods) {
+          if (preferences.foods.likes && preferences.foods.likes.length > 0) {
+            preferencesContext += "\n- Foods they like: " + preferences.foods.likes.join(", ");
+          }
+          if (preferences.foods.dislikes && preferences.foods.dislikes.length > 0) {
+            preferencesContext += "\n- Foods they dislike: " + preferences.foods.dislikes.join(", ");
+          }
+          if (preferences.foods.allergies && preferences.foods.allergies.length > 0) {
+            preferencesContext += "\n- Food allergies: " + preferences.foods.allergies.join(", ");
+          }
+        }
+        
+        // Add other preferences categories
+        const skipCategories = ['foods', 'lastUpdated'];
+        for (const category in preferences) {
+          if (!skipCategories.includes(category)) {
+            if (Array.isArray(preferences[category]) && preferences[category].length > 0) {
+              preferencesContext += `\n- ${category.charAt(0).toUpperCase() + category.slice(1)}: ` + preferences[category].join(", ");
+            } else if (typeof preferences[category] === 'object') {
+              for (const subCategory in preferences[category]) {
+                if (Array.isArray(preferences[category][subCategory]) && preferences[category][subCategory].length > 0) {
+                  preferencesContext += `\n- ${category.charAt(0).toUpperCase() + category.slice(1)} ${subCategory}: ` + preferences[category][subCategory].join(", ");
+                }
+              }
+            }
+          }
+        }
+        
+        preferencesContext += "\n\nUse these preferences to personalize your response when relevant, but don't explicitly mention that you know these preferences unless the user asks about them.";
+        
+        systemPromptWithHistory += preferencesContext;
+      }
+    } catch (error) {
+      console.error('Error adding preferences to prompt:', error);
+      // Continue without preferences if there's an error
     }
     
     // Get emotion-aware system prompt
@@ -405,16 +450,6 @@ async function getChatEntryById(userId, chatId) {
  * @returns {Promise<Array>} - The generated embeddings
  */
 async function generateEmbeddings(text) {
-  const { OpenAI } = require('openai');
-  require('dotenv').config();
-
-  if (!process.env.apiKey) {
-    throw new Error('OpenAI API key is required but not found in environment variables');
-  }
-
-  const openai = new OpenAI({
-    apiKey: process.env.apiKey
-  });
 
   try {
     const response = await openai.embeddings.create({
@@ -881,6 +916,230 @@ async function getUserBehaviorTracking(userId) {
   }
 }
 
+/**
+ * Extracts user preferences from chat messages using OpenAI
+ * @param {string} userId - The user ID
+ * @param {string} message - The user's message to analyze
+ * @returns {Promise<Object>} - The updated user preferences
+ */
+async function extractUserPreferences(userId, message) {
+  try {
+
+    // Get existing preferences or initialize
+    const chatRef = db.collection('aichats').doc(userId);
+    const chatDoc = await chatRef.get();
+    
+    let preferences = {};
+    
+    if (chatDoc.exists && chatDoc.data().preferences) {
+      preferences = chatDoc.data().preferences;
+    } else {
+      // Initialize preferences structure if it doesn't exist
+      preferences = {
+        lastUpdated: new Date().toISOString()
+      };
+    }
+
+    // Get recent chat history for context
+    const chatHistory = await getChatHistoryForUser(userId, 5);
+    let chatContext = "";
+    
+    if (chatHistory && chatHistory.length > 0) {
+      chatContext = "Recent conversation history:\n";
+      chatHistory.forEach(entry => {
+        chatContext += `User: ${entry.question}\nAssistant: ${entry.response}\n\n`;
+      });
+    }
+
+    // Prepare the prompt for OpenAI
+    const prompt = `You are an AI assistant that extracts user preferences from conversations. 
+    Analyze the following message and extract any preferences the user mentions.
+    
+    Current message: "${message}"
+    
+    ${chatContext ? chatContext : ""}
+    
+    Extract preferences in the following categories and any new categories you discover:
+    - foods (likes, dislikes, allergies)
+    - places (frequented locations, favorite spots)
+    - brands (clothing, electronics, etc.)
+    - activities (hobbies, interests)
+    - entertainment (movies, music, books)
+    - schedule (routines, preferred times)
+    
+    If you find preferences in a category not listed above, create a new category for it.
+    
+    Format your response as a JSON object with arrays for each category. Only include categories where you found preferences.
+    Example format:
+    {
+      "foods": {
+        "likes": ["pizza", "sushi"],
+        "dislikes": ["broccoli"],
+        "allergies": ["peanuts"]
+      },
+      "places": ["coffee shop on 5th street", "central park"],
+      "new_category_name": ["preference1", "preference2"]
+    }
+    
+    IMPORTANT: Only respond with the raw JSON object. Do not include any markdown formatting, code blocks, or backticks in your response. Do not include any explanatory text before or after the JSON.`;
+
+    try {
+      // Call OpenAI to extract preferences
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [{
+          role: 'user',
+          content: prompt
+        }],
+        temperature: 0.3,
+        max_tokens: 500
+      });
+      
+      // Check if the response contains concerning content
+      const responseContent = completion.choices[0].message.content.trim();
+      if (responseContent.includes('die') || 
+          responseContent.includes('suicide') || 
+          responseContent.includes('kill') || 
+          !responseContent.includes('{')) {
+        console.log('Potentially concerning or invalid response from OpenAI:', responseContent);
+        return preferences; // Return existing preferences without updating
+      }
+
+      let extractedPreferencesText = responseContent;
+      let extractedPreferences;
+      
+      try {
+        // Remove markdown code block delimiters if present
+        if (extractedPreferencesText.startsWith('```json')) {
+          extractedPreferencesText = extractedPreferencesText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+        } else if (extractedPreferencesText.startsWith('```')) {
+          extractedPreferencesText = extractedPreferencesText.replace(/^```\s*/, '').replace(/\s*```$/, '');
+        }
+        
+        // Parse the JSON response
+        extractedPreferences = JSON.parse(extractedPreferencesText);
+      } catch (parseError) {
+        console.error('Error parsing OpenAI response:', parseError);
+        console.log('Raw response:', extractedPreferencesText);
+        return preferences; // Return existing preferences if parsing fails
+      }
+
+      // Merge extracted preferences with existing preferences
+      for (const category in extractedPreferences) {
+        if (category === 'foods') {
+          // Special handling for foods category with subcategories
+          if (!preferences.foods) {
+            preferences.foods = {
+              likes: [],
+              dislikes: [],
+              allergies: []
+            };
+          }
+          
+          // Merge food subcategories
+          for (const subCategory in extractedPreferences.foods) {
+            if (!preferences.foods[subCategory]) {
+              preferences.foods[subCategory] = [];
+            }
+            
+            // Add new items avoiding duplicates
+            extractedPreferences.foods[subCategory].forEach(item => {
+              if (!preferences.foods[subCategory].includes(item)) {
+                preferences.foods[subCategory].push(item);
+              }
+            });
+          }
+        } else {
+          // Handle other categories
+          if (!preferences[category]) {
+            preferences[category] = [];
+          }
+          
+          // If the category is an array
+          if (Array.isArray(extractedPreferences[category])) {
+            // Add new items avoiding duplicates
+            extractedPreferences[category].forEach(item => {
+              if (!preferences[category].includes(item)) {
+                preferences[category].push(item);
+              }
+            });
+          } else if (typeof extractedPreferences[category] === 'object') {
+            // If the category is an object with subcategories
+            if (!preferences[category] || typeof preferences[category] !== 'object') {
+              preferences[category] = {};
+            }
+            
+            // Merge subcategories
+            for (const subCategory in extractedPreferences[category]) {
+              if (!preferences[category][subCategory]) {
+                preferences[category][subCategory] = [];
+              }
+              
+              // Add new items avoiding duplicates
+              extractedPreferences[category][subCategory].forEach(item => {
+                if (!preferences[category][subCategory].includes(item)) {
+                  preferences[category][subCategory].push(item);
+                }
+              });
+            }
+          }
+        }
+      }
+
+      // Update lastUpdated timestamp
+      preferences.lastUpdated = new Date().toISOString();
+
+      // Save updated preferences to Firestore
+      await chatRef.update({
+        preferences: preferences,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      return preferences;
+    } catch (error) {
+      console.error('Error extracting user preferences:', error);
+      throw new Error('Failed to extract user preferences: ' + error.message);
+    }
+  } catch (error) {
+    console.error('Error extracting user preferences:', error);
+    throw new Error('Failed to extract user preferences: ' + error.message);
+  }
+}
+
+/**
+ * Gets the user preferences
+ * @param {string} userId - The user ID
+ * @returns {Promise<Object>} - The user preferences
+ */
+async function getUserPreferences(userId) {
+  try {
+    const chatRef = db.collection('aichats').doc(userId);
+    const chatDoc = await chatRef.get();
+    
+    if (!chatDoc.exists || !chatDoc.data().preferences) {
+      // Return default structure if no preferences exist
+      return {
+        foods: {
+          likes: [],
+          dislikes: [],
+          allergies: []
+        },
+        places: [],
+        brands: [],
+        activities: [],
+        entertainment: [],
+        schedule: [],
+        lastUpdated: new Date().toISOString()
+      };
+    }
+    
+    return chatDoc.data().preferences;
+  } catch (error) {
+    console.error('Error retrieving user preferences:', error);
+    throw new Error('Failed to retrieve user preferences: ' + error.message);
+  }
+}
+
 module.exports = { 
   generateResponse, 
   getChatHistoryForUser, 
@@ -893,5 +1152,7 @@ module.exports = {
   getMomentsForUser,
   migrateMomentsToNewFormat,
   updateUserBehaviorTracking,
-  getUserBehaviorTracking
+  getUserBehaviorTracking,
+  extractUserPreferences,
+  getUserPreferences
 };

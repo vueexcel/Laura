@@ -1,5 +1,5 @@
 const asyncHandler = require('express-async-handler');
-const { generateResponse, getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch, tagChatEntryAsMoment, getMomentsForUser, migrateMomentsToNewFormat, updateUserBehaviorTracking, getUserBehaviorTracking } = require('../helpers/firestoreHelper');
+const { generateResponse, getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch, tagChatEntryAsMoment, getMomentsForUser, migrateMomentsToNewFormat, updateUserBehaviorTracking, getUserBehaviorTracking, extractUserPreferences, getUserPreferences } = require('../helpers/firestoreHelper');
 const { textToSpeech, getVoiceIdFromEmotionTag } = require('../helpers/audioHelper');
 const { transcribeAudio } = require('../helpers/transcriptionHelper');
 // No longer need to import getEmotionState since we're not including it in the response
@@ -71,6 +71,13 @@ const generateAIResponse = asyncHandler(async (req, res) => {
             voiceId: voiceId,
             id: chatId, // Include the chat ID in the response
             audio: audioBuffer.toString('base64')
+        });
+
+        // Extract and update user preferences asynchronously after sending the response
+        // This won't block the API response
+        extractUserPreferences(userId, userText).catch(error => {
+            console.error('Error extracting user preferences:', error);
+            // Don't throw the error as it would not affect the response
         });
 
     } catch (error) {
@@ -318,6 +325,30 @@ const getUserBehavior = asyncHandler(async (req, res) => {
     }
 });
 
+/**
+ * Gets the user preferences
+ */
+const getUserPreferencesData = asyncHandler(async (req, res) => {
+    // Get userId from authenticated user or use a test ID
+    const userId = req.user ? req.user.id : "test_user_id";
+
+    try {
+        // Get the user preferences
+        const preferences = await getUserPreferences(userId);
+
+        res.status(200).json({
+            success: true,
+            preferences: preferences
+        });
+    } catch (error) {
+        console.error('Error fetching user preferences:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Failed to fetch user preferences'
+        });
+    }
+});
+
 module.exports = { 
     generateAIResponse, 
     getChatHistory, 
@@ -326,5 +357,6 @@ module.exports = {
     tagMoment,
     getMoments,
     migrateMoments,
-    getUserBehavior
+    getUserBehavior,
+    getUserPreferencesData
 };
