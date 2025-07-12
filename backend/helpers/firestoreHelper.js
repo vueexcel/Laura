@@ -75,14 +75,12 @@ async function generateResponse(transcribedText, userId) {
     let chatSummary = "";
     
     try {
-      // Reference to the user's chat document
-      const chatRef = db.collection('aichats').doc(userId);
-      const chatDoc = await chatRef.get();
+      // Fetch chat history from the last 3 months
+      const chatHistory = await getChatHistoryForUser(userId);
       
-      if (chatDoc.exists && chatDoc.data().chat && chatDoc.data().chat.length > 0) {
-        const chatData = chatDoc.data();
+      if (chatHistory && chatHistory.length > 0) {
         // Get the last 5 exchanges (or fewer if there aren't 5)
-        const recentChats = chatData.chat.slice(-5);
+        const recentChats = chatHistory.slice(-5);
         
         // Generate a summary for system context
         chatSummary = generateChatSummary(recentChats);
@@ -256,21 +254,72 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
       content: transcribedText
     });
 
-    const completion = await openai.chat.completions.create({
+    // Get chat history to check for duplicates
+    let chatHistory = [];
+    try {
+      // Get the last 100 messages for duplicate checking
+      chatHistory = await getChatHistoryForUser(userId, 100);
+    } catch (historyError) {
+      console.error('Error fetching chat history for duplicate check:', historyError);
+      // Continue without history if there's an error
+    }
+    
+    // Initial completion
+    let completion = await openai.chat.completions.create({
       model: 'gpt-4o',
       messages: messages,
       temperature: 0.7,
       max_tokens: 500
     });
 
-    const fullResponse = completion.choices[0].message.content;
+    let fullResponse = completion.choices[0].message.content;
     
     // Extract emotion tag and clean response
-    const emotionTagMatch = fullResponse.match(/\[(.*?)\]\s*$/); // Match tag at the end
-    const emotionTag = emotionTagMatch ? emotionTagMatch[1].trim() : 'neutral';
+    let emotionTagMatch = fullResponse.match(/\[(.*?)\]\s*$/);
+    let emotionTag = emotionTagMatch ? emotionTagMatch[1].trim() : 'neutral';
     
     // Remove the emotion tag from the response
-    const cleanResponse = fullResponse.replace(/\[(.*?)\]\s*$/, '').trim();
+    let cleanResponse = fullResponse.replace(/\[(.*?)\]\s*$/, '').trim();
+    
+    // Check if this response is a duplicate of any in the last 100 messages
+    if (chatHistory.length > 0) {
+      const isDuplicate = isDuplicateResponse(cleanResponse, chatHistory);
+      
+      // If it's a duplicate, request a different response
+      if (isDuplicate) {
+        console.log('Duplicate response detected, requesting alternative...');
+        
+        // Add a system message requesting variation
+        const alternativeTemplate = getAlternativeTemplate();
+        messages.push({
+          role: 'assistant',
+          content: cleanResponse
+        });
+        messages.push({
+          role: 'system',
+          content: `The previous response is too similar to one you've given before. ${alternativeTemplate}`
+        });
+        
+        // Generate a new response with higher temperature for more variation
+        completion = await openai.chat.completions.create({
+          model: 'gpt-4o',
+          messages: messages,
+          temperature: 0.9, // Higher temperature for more variation
+          max_tokens: 500
+        });
+        
+        fullResponse = completion.choices[0].message.content;
+        
+        // Extract emotion tag and clean response again
+        emotionTagMatch = fullResponse.match(/\[(.*?)\]\s*$/);
+        emotionTag = emotionTagMatch ? emotionTagMatch[1].trim() : 'neutral';
+        
+        // Remove the emotion tag from the response
+        cleanResponse = fullResponse.replace(/\[(.*?)\]\s*$/, '').trim();
+      }
+    }
+    
+    // Note: Emotion tag extraction and response cleaning is now done earlier in the function
 
     // Save chat history to Firestore
     try {
@@ -313,6 +362,12 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
         });
       }
       
+      // Import hash helper functions
+      const { generateHash, isDuplicateResponse, getAlternativeTemplate } = require('./hashHelper');
+      
+      // Generate hash for the response
+      const responseHash = generateHash(cleanResponse);
+      
       // Add the new chat entry
       const newChatEntry = {
         question: transcribedText,
@@ -320,7 +375,9 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
         emotionTag: emotionTag,
         createdAt: new Date(),
         // Generate a unique ID for the chat entry
-        id: Date.now().toString()
+        id: Date.now().toString(),
+        // Add the response hash for duplicate detection
+        responseHash: responseHash
       };
       
       // Generate embeddings for the question - temporarily commented out
@@ -382,8 +439,18 @@ async function getChatHistoryForUser(userId, limit = 10) {
     }
     
     const chatData = chatDoc.data();
+    
+    // Filter chat entries from the last 3 months
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    
+    const filteredChat = chatData.chat.filter(entry => {
+      const entryDate = new Date(entry.createdAt);
+      return entryDate >= threeMonthsAgo;
+    });
+    
     // Return the most recent entries up to the limit
-    return chatData.chat.slice(-limit);
+    return filteredChat.slice(-limit);
   } catch (error) {
     console.error('Error retrieving chat history:', error);
     throw new Error('Failed to retrieve chat history: ' + error.message);
