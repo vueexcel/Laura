@@ -1,6 +1,6 @@
 const asyncHandler = require('express-async-handler');
 const { generateResponse, getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch, tagChatEntryAsMoment, getMomentsForUser, migrateMomentsToNewFormat, updateUserBehaviorTracking, getUserBehaviorTracking, extractUserPreferences, getUserPreferences } = require('../helpers/firestoreHelper');
-const { getTrustLevel } = require('../helpers/trustLevelHelper');
+const { getTrustLevel, updateTrustLevel } = require('../helpers/trustLevelHelper');
 const { textToSpeech, getVoiceIdFromEmotionTag } = require('../helpers/audioHelper');
 const { transcribeAudio } = require('../helpers/transcriptionHelper');
 // No longer need to import getEmotionState since we're not including it in the response
@@ -13,9 +13,9 @@ const generateAIResponse = asyncHandler(async (req, res) => {
     // In production, this should come from req.user.id after authentication
     const userId = req.user ? req.user.id : "test_user_id";
     try {
-        // Track user behavior when API is accessed
+        // Start tracking user behavior asynchronously - don't await
         const currentOpenTime = new Date();
-        const usageTracking = await updateUserBehaviorTracking(userId, currentOpenTime);
+        const usageTrackingPromise = updateUserBehaviorTracking(userId, currentOpenTime);
         
         let userText;
         
@@ -74,12 +74,34 @@ const generateAIResponse = asyncHandler(async (req, res) => {
             audio: audioBuffer.toString('base64')
         });
 
-        // Extract and update user preferences asynchronously after sending the response
-        // This won't block the API response
-        extractUserPreferences(userId, userText).catch(error => {
-            console.error('Error extracting user preferences:', error);
-            // Don't throw the error as it would not affect the response
+        // Handle all post-response operations asynchronously
+        Promise.all([
+            // Wait for the usage tracking to complete
+            usageTrackingPromise.then(usageTracking => {
+                // Check if updateTrustLevel is defined before calling it
+                if (typeof updateTrustLevel === 'function') {
+                    return updateTrustLevel(userId, usageTracking);
+                } else {
+                    console.error('updateTrustLevel is not defined or not a function');
+                    return Promise.resolve(); // Return a resolved promise to continue the chain
+                }
+            }).catch(error => {
+                console.error('Error updating trust level:', error);
+                return Promise.resolve(); // Return a resolved promise to continue the chain
+            }),
+            
+            // Extract and update user preferences asynchronously
+            extractUserPreferences(userId, userText).catch(error => {
+                console.error('Error extracting user preferences:', error);
+                return Promise.resolve(); // Return a resolved promise to continue the chain
+            })
+        ]).catch(error => {
+            console.error('Error in post-response operations:', error);
         });
+        
+        // Log successful response generation
+        console.log(`Successfully generated response for user ${userId}`);
+
 
     } catch (error) {
         console.error('Error in generateAIResponse:', error);

@@ -68,8 +68,8 @@ async function generateResponse(transcribedText, userId) {
   const { updateTrustLevel, getTrustLevelPrompt } = require('./trustLevelHelper');
 
   try {
-    // Update the user's emotion state based on their message
-    await updateEmotionState(userId, transcribedText);
+    // Start updating the user's emotion state based on their message, but don't await
+    const emotionStatePromise = updateEmotionState(userId, transcribedText);
     
     // Fetch previous chat history for context
     const previousMessages = [];
@@ -331,108 +331,115 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
     
     // Note: Emotion tag extraction and response cleaning is now done earlier in the function
 
-    // Save chat history to Firestore
-    try {
-      const chatRef = db.collection('aichats').doc(userId);
-      const chatDoc = await chatRef.get();
-      
-      if (!chatDoc.exists) {
-        // Create initial emotion state
-        const initialEmotionState = {
-          fatigue: 0.1,
-          stress: 0.1,
-          joy: 0.5,
-          withdrawn: 0.1,
-          talkative: 0.5,
-          concern: 0.1,
-          excitement: 0.3,
-          curiosity: 0.4,
-          empathy: 0.4,
-          confidence: 0.5,
-          lastUpdated: new Date().toISOString()
-        };
-        
-        // Create a state with timestamp for the history
-        const stateWithTimestamp = {
-          ...initialEmotionState,
-          timestamp: new Date().toISOString()
-        };
-        
-        // Initialize emotion history with the initial state
-        const emotionHistory = [stateWithTimestamp];
-        
-        // Create a new chat document if it doesn't exist
-        await chatRef.set({
-          user_id: userId,
-          chat: [],
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          emotionState: initialEmotionState,
-          emotionHistory: emotionHistory
-        });
-      }
-      
-      // Import hash helper functions
-      const { generateHash, isDuplicateResponse, getAlternativeTemplate } = require('./hashHelper');
-      
-      // Generate hash for the response
-      const responseHash = generateHash(cleanResponse);
-      
-      // Add the new chat entry
-      const newChatEntry = {
-        question: transcribedText,
-        response: cleanResponse,
-        emotionTag: emotionTag,
-        createdAt: new Date(),
-        // Generate a unique ID for the chat entry
-        id: Date.now().toString(),
-        // Add the response hash for duplicate detection
-        responseHash: responseHash
-      };
-      
-      // Generate embeddings for the question - temporarily commented out
-      // try {
-      //   const questionEmbeddings = await generateEmbeddings(transcribedText);
-      //   newChatEntry.embeddings = questionEmbeddings;
-      // } catch (embeddingError) {
-      //   console.error('Error generating embeddings:', embeddingError);
-      //   // Continue without embeddings if there's an error
-      // }
-      
-      // Update the chat array with the new entry
-      await chatRef.update({
-        chat: admin.firestore.FieldValue.arrayUnion(newChatEntry),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-      
-      // Update the emotion state based on the response
-      await updateEmotionState(userId, cleanResponse, emotionTag);
-      
-      // Update user behavior tracking
-      const usageTracking = await updateUserBehaviorTracking(userId);
-      
-      // Update trust level based on behavior and chat data
-      await updateTrustLevel(userId, usageTracking, chatDoc.data());
-      
-      // Return the response with the chat ID
-      return {
-        response: cleanResponse,
-        emotionTag: emotionTag,
-        id: newChatEntry.id
-      };
-    } catch (error) {
-      console.error('Error saving chat history:', error);
-      // Continue even if saving history fails
-    }
-
-    // If we reach here, it means there was an error saving to Firestore
-    // but we still want to return the response with a generated ID
-    const fallbackId = Date.now().toString();
-    return { 
-      response: cleanResponse, 
-      emotionTag,
-      id: fallbackId
+    // Generate a unique ID for the chat entry now, so we can return it immediately
+    const chatEntryId = Date.now().toString();
+    
+    // Import hash helper functions
+    const { generateHash, isDuplicateResponse, getAlternativeTemplate } = require('./hashHelper');
+    
+    // Generate hash for the response
+    const responseHash = generateHash(cleanResponse);
+    
+    // Prepare the new chat entry
+    const newChatEntry = {
+      question: transcribedText,
+      response: cleanResponse,
+      emotionTag: emotionTag,
+      createdAt: new Date(),
+      id: chatEntryId,
+      responseHash: responseHash
     };
+    
+    // Return the response immediately with the chat ID
+    const responseObject = {
+      response: cleanResponse,
+      emotionTag: emotionTag,
+      id: chatEntryId
+    };
+    
+    // Save chat history to Firestore asynchronously (don't await)
+    (async () => {
+      try {
+        const chatRef = db.collection('aichats').doc(userId);
+        const chatDoc = await chatRef.get();
+        
+        if (!chatDoc.exists) {
+          // Create initial emotion state
+          const initialEmotionState = {
+            fatigue: 0.1,
+            stress: 0.1,
+            joy: 0.5,
+            withdrawn: 0.1,
+            talkative: 0.5,
+            concern: 0.1,
+            excitement: 0.3,
+            curiosity: 0.4,
+            empathy: 0.4,
+            confidence: 0.5,
+            lastUpdated: new Date().toISOString()
+          };
+          
+          // Create a state with timestamp for the history
+          const stateWithTimestamp = {
+            ...initialEmotionState,
+            timestamp: new Date().toISOString()
+          };
+          
+          // Initialize emotion history with the initial state
+          const emotionHistory = [stateWithTimestamp];
+          
+          // Create a new chat document if it doesn't exist
+          await chatRef.set({
+            user_id: userId,
+            chat: [],
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            emotionState: initialEmotionState,
+            emotionHistory: emotionHistory
+          });
+        }
+        
+        // Update the chat array with the new entry
+        await chatRef.update({
+          chat: admin.firestore.FieldValue.arrayUnion(newChatEntry),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Process emotion state updates with proper error handling
+        try {
+          // Wait for the emotion state update to complete
+          await emotionStatePromise;
+          
+          // Update the emotion state based on the response
+          await updateEmotionState(userId, cleanResponse, emotionTag);
+        } catch (emotionError) {
+          console.error('Error updating emotion state:', emotionError);
+          // Continue with other operations even if emotion state update fails
+        }
+        
+        // Process behavior tracking and trust level updates with proper error handling
+        try {
+          // Update user behavior tracking
+          const usageTracking = await updateUserBehaviorTracking(userId);
+          
+          // Update trust level based on behavior and chat data
+          if (typeof updateTrustLevel === 'function') {
+            await updateTrustLevel(userId, usageTracking, chatDoc.data());
+          } else {
+            console.error('updateTrustLevel is not defined or not a function');
+          }
+        } catch (trackingError) {
+          console.error('Error updating behavior tracking or trust level:', trackingError);
+          // Continue even if tracking updates fail
+        }
+      } catch (error) {
+        console.error('Error saving chat history:', error);
+        // Continue even if saving history fails
+      }
+    })();
+    
+    // Return the response object immediately
+    return responseObject;
   } catch (error) {
     console.error('Error generating response:', error);
     throw new Error('Failed to generate response: ' + error.message);
