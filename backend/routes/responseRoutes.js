@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
-const { generateAIResponse, getChatHistory, clearChatHistory, getChatEntryDetail, tagMoment, getMoments, migrateMoments, getUserBehavior, getUserPreferencesData } = require('../controllers/responseController');
+const { generateAIResponse, getChatHistory, clearChatHistory, getChatEntryDetail, tagMoment, getMoments, migrateMoments, getUserBehavior, getUserPreferencesData, getTrustLevelController } = require('../controllers/responseController');
 const { protect } = require('../middleware/authMiddleware');
 
 // Configure multer storage for audio files
@@ -39,5 +39,8 @@ router.get('/behavior', getUserBehavior);
 
 // User preferences route
 router.get('/preferences', getUserPreferencesData);
+
+// Trust level route
+router.get('/trust-level', getTrustLevelController);
 
 module.exports = router;

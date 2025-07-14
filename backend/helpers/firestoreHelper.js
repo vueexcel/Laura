@@ -65,6 +65,7 @@ function generateChatSummary(chatHistory, maxLength = 500) {
  */
 async function generateResponse(transcribedText, userId) {
   const { updateEmotionState, getEmotionAwarePrompt } = require('./emotionMemoryHelper');
+  const { updateTrustLevel, getTrustLevelPrompt } = require('./trustLevelHelper');
 
   try {
     // Update the user's emotion state based on their message
@@ -177,6 +178,15 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
     
     // Get emotion-aware system prompt
     let systemContent = await getEmotionAwarePrompt(userId, systemPromptWithHistory);
+    
+    // Add trust level information to the prompt
+    try {
+      const trustLevelPrompt = await getTrustLevelPrompt(userId);
+      systemContent += trustLevelPrompt;
+    } catch (error) {
+      console.error('Error adding trust level to prompt:', error);
+      // Continue without trust level if there's an error
+    }
     
     // Add emotion history and usage history data to the prompt
     try {
@@ -397,6 +407,12 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
       
       // Update the emotion state based on the response
       await updateEmotionState(userId, cleanResponse, emotionTag);
+      
+      // Update user behavior tracking
+      const usageTracking = await updateUserBehaviorTracking(userId);
+      
+      // Update trust level based on behavior and chat data
+      await updateTrustLevel(userId, usageTracking, chatDoc.data());
       
       // Return the response with the chat ID
       return {

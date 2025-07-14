@@ -1,5 +1,6 @@
 const asyncHandler = require('express-async-handler');
 const { generateResponse, getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch, tagChatEntryAsMoment, getMomentsForUser, migrateMomentsToNewFormat, updateUserBehaviorTracking, getUserBehaviorTracking, extractUserPreferences, getUserPreferences } = require('../helpers/firestoreHelper');
+const { getTrustLevel } = require('../helpers/trustLevelHelper');
 const { textToSpeech, getVoiceIdFromEmotionTag } = require('../helpers/audioHelper');
 const { transcribeAudio } = require('../helpers/transcriptionHelper');
 // No longer need to import getEmotionState since we're not including it in the response
@@ -349,6 +350,28 @@ const getUserPreferencesData = asyncHandler(async (req, res) => {
     }
 });
 
+const getTrustLevelController = asyncHandler(async (req, res) => {
+    // Get userId from authenticated user or use a test ID
+    // In production, this should come from req.user.id after authentication
+    const userId = req.user ? req.user.id : "test_user_id";
+
+    try {
+        // Get the user's trust level
+        const trustLevelData = await getTrustLevel(userId);
+        
+        res.status(200).json({
+            success: true,
+            trustLevel: trustLevelData
+        });
+    } catch (error) {
+        console.error('Error in getTrustLevelController:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Failed to get trust level'
+        });
+    }
+});
+
 module.exports = { 
     generateAIResponse, 
     getChatHistory, 
@@ -358,5 +381,6 @@ module.exports = {
     getMoments,
     migrateMoments,
     getUserBehavior,
-    getUserPreferencesData
+    getUserPreferencesData,
+    getTrustLevelController
 };
