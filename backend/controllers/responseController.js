@@ -1,11 +1,14 @@
 const asyncHandler = require('express-async-handler');
-const { generateResponse, getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch, tagChatEntryAsMoment, getMomentsForUser, migrateMomentsToNewFormat, updateUserBehaviorTracking, getUserBehaviorTracking, extractUserPreferences, getUserPreferences } = require('../helpers/firestoreHelper');
+const { generateResponse, getChatHistoryForUser, clearChatHistoryForUser, getChatEntryById, semanticSearch, tagChatEntryAsMoment, getMomentsForUser, migrateMomentsToNewFormat, updateUserBehaviorTracking, getUserBehaviorTracking, extractUserPreferences, getUserPreferences, generateChatSummary } = require('../helpers/firestoreHelper');
 const { getTrustLevel, updateTrustLevel } = require('../helpers/trustLevelHelper');
 const { textToSpeech, getVoiceIdFromEmotionTag } = require('../helpers/audioHelper');
 const { transcribeAudio } = require('../helpers/transcriptionHelper');
 // No longer need to import getEmotionState since we're not including it in the response
 const fs = require('fs');
 const path = require('path');
+// Import Firebase Admin for Firestore access
+const admin = require('firebase-admin');
+const db = admin.firestore();
 // Removed MongoDB AiChat schema import as we're using Firestore
 
 const generateAIResponse = asyncHandler(async (req, res) => {
@@ -94,7 +97,42 @@ const generateAIResponse = asyncHandler(async (req, res) => {
             extractUserPreferences(userId, userText).catch(error => {
                 console.error('Error extracting user preferences:', error);
                 return Promise.resolve(); // Return a resolved promise to continue the chain
-            })
+            }),
+            
+            // Generate chat summary for the last month asynchronously
+            (async () => {
+                try {
+                    // Get chat history for the last month
+                    const oneMonthAgo = new Date();
+                    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+                    
+                    // Get up to 100 messages from the last month to create a comprehensive summary
+                    const chatHistory = await getChatHistoryForUser(userId, 100);
+                    
+                    // Filter to only include messages from the last month
+                    const lastMonthChats = chatHistory.filter(entry => {
+                        const entryDate = new Date(entry.createdAt);
+                        return entryDate >= oneMonthAgo;
+                    });
+                    
+                    if (lastMonthChats.length > 0) {
+                        // Generate a summary of the last month's chat history
+                        const chatSummary = generateChatSummary(lastMonthChats);
+                        
+                        // Store the chat summary in Firestore for future use
+                        const chatRef = db.collection('aichats').doc(userId);
+                        await chatRef.update({
+                            chatSummary: chatSummary,
+                            chatSummaryUpdatedAt: new Date().toISOString()
+                        });
+                        
+                        console.log(`Successfully generated chat summary for user ${userId}`);
+                    }
+                } catch (error) {
+                    console.error('Error generating chat summary:', error);
+                    return Promise.resolve(); // Return a resolved promise to continue the chain
+                }
+            })()
         ]).catch(error => {
             console.error('Error in post-response operations:', error);
         });

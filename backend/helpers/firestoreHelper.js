@@ -64,8 +64,7 @@ function generateChatSummary(chatHistory, maxLength = 500) {
  * @returns {Promise<string>} - The generated response
  */
 async function generateResponse(transcribedText, userId) {
-  const { updateEmotionState, getEmotionAwarePrompt } = require('./emotionMemoryHelper');
-  const { updateTrustLevel, getTrustLevelPrompt } = require('./trustLevelHelper');
+  const { updateEmotionState } = require('./emotionMemoryHelper');
 
   try {
     // Start updating the user's emotion state based on their message, but don't await
@@ -76,30 +75,34 @@ async function generateResponse(transcribedText, userId) {
     let chatSummary = "";
     
     try {
-      // Fetch chat history from the last 3 months
-      const chatHistory = await getChatHistoryForUser(userId);
+      // Get the stored chat summary from Firestore instead of generating it on each request
+      const chatRef = db.collection('aichats').doc(userId);
+      const chatDoc = await chatRef.get();
+      
+      if (chatDoc.exists && chatDoc.data().chatSummary) {
+        // Use the stored chat summary
+        chatSummary = chatDoc.data().chatSummary;
+        console.log(`Using stored chat summary for user ${userId}`);
+      }
+      
+      // Get the last 5 exchanges for message context
+      const chatHistory = await getChatHistoryForUser(userId, 5);
       
       if (chatHistory && chatHistory.length > 0) {
-        // Get the last 5 exchanges (or fewer if there aren't 5)
-        const recentChats = chatHistory.slice(-5);
-        
-        // Generate a summary for system context
-        chatSummary = generateChatSummary(recentChats);
-        
         // Add each exchange as a message pair in chronological order
-        for (let i = 0; i < recentChats.length; i++) {
+        for (let i = 0; i < chatHistory.length; i++) {
           previousMessages.push({
             role: 'user',
-            content: recentChats[i].question
+            content: chatHistory[i].question
           });
           previousMessages.push({
             role: 'assistant',
-            content: recentChats[i].response
+            content: chatHistory[i].response
           });
         }
       }
     } catch (error) {
-      console.error('Error fetching chat history:', error);
+      console.error('Error fetching chat history or summary:', error);
       // Continue without history if there's an error
     }
 
@@ -123,128 +126,8 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
       baseSystemPrompt += "\n\nIMPORTANT: You have access to previous conversation history. Here's a summary of recent interactions:\n" + chatSummary + "\n\nMaintain continuity with this conversation history and remember what was discussed earlier.";
     }
     
-    // Get emotion-aware system prompt with emotion history and usage history
-    let systemPromptWithHistory = baseSystemPrompt;
-    
-    // Add chat history summary if available
-    if (chatSummary) {
-      systemPromptWithHistory += "\n\nIMPORTANT: You have access to previous conversation history. Here's a summary of recent interactions:\n" + chatSummary + "\n\nMaintain continuity with this conversation history and remember what was discussed earlier.";
-    }
-    
-    // Add user preferences if available
-    try {
-      const preferences = await getUserPreferences(userId);
-      
-      if (preferences && Object.keys(preferences).length > 1) { // More than just lastUpdated
-        let preferencesContext = "\n\nUSER PREFERENCES: I have information about the user's preferences that might be relevant to this conversation:\n";
-        
-        // Add food preferences if available
-        if (preferences.foods) {
-          if (preferences.foods.likes && preferences.foods.likes.length > 0) {
-            preferencesContext += "\n- Foods they like: " + preferences.foods.likes.join(", ");
-          }
-          if (preferences.foods.dislikes && preferences.foods.dislikes.length > 0) {
-            preferencesContext += "\n- Foods they dislike: " + preferences.foods.dislikes.join(", ");
-          }
-          if (preferences.foods.allergies && preferences.foods.allergies.length > 0) {
-            preferencesContext += "\n- Food allergies: " + preferences.foods.allergies.join(", ");
-          }
-        }
-        
-        // Add other preferences categories
-        const skipCategories = ['foods', 'lastUpdated'];
-        for (const category in preferences) {
-          if (!skipCategories.includes(category)) {
-            if (Array.isArray(preferences[category]) && preferences[category].length > 0) {
-              preferencesContext += `\n- ${category.charAt(0).toUpperCase() + category.slice(1)}: ` + preferences[category].join(", ");
-            } else if (typeof preferences[category] === 'object') {
-              for (const subCategory in preferences[category]) {
-                if (Array.isArray(preferences[category][subCategory]) && preferences[category][subCategory].length > 0) {
-                  preferencesContext += `\n- ${category.charAt(0).toUpperCase() + category.slice(1)} ${subCategory}: ` + preferences[category][subCategory].join(", ");
-                }
-              }
-            }
-          }
-        }
-        
-        preferencesContext += "\n\nUse these preferences to personalize your response when relevant, but don't explicitly mention that you know these preferences unless the user asks about them.";
-        
-        systemPromptWithHistory += preferencesContext;
-      }
-    } catch (error) {
-      console.error('Error adding preferences to prompt:', error);
-      // Continue without preferences if there's an error
-    }
-    
-    // Get emotion-aware system prompt
-    let systemContent = await getEmotionAwarePrompt(userId, systemPromptWithHistory);
-    
-    // Add trust level information to the prompt
-    try {
-      const trustLevelPrompt = await getTrustLevelPrompt(userId);
-      systemContent += trustLevelPrompt;
-    } catch (error) {
-      console.error('Error adding trust level to prompt:', error);
-      // Continue without trust level if there's an error
-    }
-    
-    // Add emotion history and usage history data to the prompt
-    try {
-      const chatRef = db.collection('aichats').doc(userId);
-      const chatDoc = await chatRef.get();
-      
-      if (chatDoc.exists) {
-        const chatData = chatDoc.data();
-        
-        // Add emotion history if available
-        if (chatData.emotionHistory && chatData.emotionHistory.length > 0) {
-          // Get the last 3 emotion states for context
-          const recentEmotionHistory = chatData.emotionHistory.slice(-3);
-          
-          let emotionHistoryContext = "\n\nEMOTION HISTORY: I have tracked the user's emotional patterns over time. Here are the recent emotional states:\n";
-          
-          recentEmotionHistory.forEach((state, index) => {
-            const timestamp = new Date(state.timestamp);
-            emotionHistoryContext += `\n${index + 1}. Time: ${timestamp.toLocaleString()}, Key emotions: `;
-            
-            // Extract top 3 emotions by value
-            const emotions = Object.entries(state)
-              .filter(([key, value]) => key !== 'timestamp' && key !== 'lastUpdated' && typeof value === 'number')
-              .sort((a, b) => b[1] - a[1])
-              .slice(0, 3);
-            
-            emotionHistoryContext += emotions.map(([emotion, value]) => `${emotion}: ${value.toFixed(2)}`).join(', ');
-          });
-          
-          systemContent += emotionHistoryContext;
-        }
-        
-        // Add usage history if available
-        if (chatData.usageTracking && chatData.usageTracking.usage_history && chatData.usageTracking.usage_history.length > 0) {
-          // Get the last 3 usage entries for context
-          const recentUsageHistory = chatData.usageTracking.usage_history.slice(-3);
-          
-          let usageHistoryContext = "\n\nUSAGE PATTERNS: I have information about the user's app usage patterns:\n";
-          
-          // Add current usage data
-          usageHistoryContext += `\n- Late night usage: ${chatData.usageTracking.late_night ? 'Yes' : 'No'}`;
-          usageHistoryContext += `\n- Burst usage (frequent opens): ${chatData.usageTracking.burst_usage ? 'Yes' : 'No'}`;
-          usageHistoryContext += `\n- Time since last conversation: ${chatData.usageTracking.session_gap}`;
-          
-          // Add recent usage history
-          usageHistoryContext += "\n\nRecent usage history:";
-          recentUsageHistory.forEach((usage, index) => {
-            const openTime = new Date(usage.open_time);
-            usageHistoryContext += `\n${index + 1}. Time: ${openTime.toLocaleString()}, Late night: ${usage.late_night ? 'Yes' : 'No'}, Gap: ${usage.session_gap}`;
-          });
-          
-          systemContent += usageHistoryContext;
-        }
-      }
-    } catch (error) {
-      console.error('Error adding history data to prompt:', error);
-      // Continue without history data if there's an error
-    }
+    // Use the base system prompt directly without additional context
+    let systemContent = baseSystemPrompt;
     
     const messages = [
       {
@@ -1244,5 +1127,6 @@ module.exports = {
   updateUserBehaviorTracking,
   getUserBehaviorTracking,
   extractUserPreferences,
-  getUserPreferences
+  getUserPreferences,
+  generateChatSummary
 };
