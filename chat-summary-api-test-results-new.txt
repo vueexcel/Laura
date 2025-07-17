@@ -1,0 +1,4 @@
+API Response Time: 10.162 seconds
+Content-Type: audio/mpeg
+Audio response saved to chat_summary_response_new.mp3
+File size: 331486 bytes

@@ -9,17 +9,16 @@ const path = require('path');
 // Import Firebase Admin for Firestore access
 const admin = require('firebase-admin');
 const db = admin.firestore();
+// Import OpenAI for direct API access
+const OpenAI = require('openai');
 // Removed MongoDB AiChat schema import as we're using Firestore
 
 const generateAIResponse = asyncHandler(async (req, res) => {
     // Get userId from authenticated user or use a test ID
     // In production, this should come from req.user.id after authentication
     const userId = req.user ? req.user.id : "test_user_id";
+    
     try {
-        // Start tracking user behavior asynchronously - don't await
-        const currentOpenTime = new Date();
-        const usageTrackingPromise = updateUserBehaviorTracking(userId, currentOpenTime);
-        
         let userText;
         
         // Check if audio file is provided in the request
@@ -42,21 +41,91 @@ const generateAIResponse = asyncHandler(async (req, res) => {
             });
         }
 
-        // Generate response using Firestore implementation
-        // This will automatically save the chat history to Firestore
-        const response = await generateResponse(userText, userId);
+        // Get chat history for context
+        const chatHistory = await getChatHistoryForUser(userId, 5);
         
-        // Extract emotion tag from response if available, or use a default
-        let emotionTag = 'neutral';
-        let cleanResponse = response;
-        let chatId = null;
-        
-        // If response is an object with emotionTag property (from firestoreHelper)
-        if (typeof response === 'object' && response.emotionTag) {
-            emotionTag = response.emotionTag;
-            cleanResponse = response.response;
-            chatId = response.id; // Get the chat ID from the response
+        // Fetch existing chat summary from Firestore
+        let chatSummary = "";
+        try {
+            const chatRef = db.collection('chatSummary').doc(userId);
+            const chatDoc = await chatRef.get();
+            
+            if (chatDoc.exists && chatDoc.data().summary) {
+                // Use the stored chat summary
+                chatSummary = chatDoc.data().summary;
+                console.log(`Using stored chat summary for user ${userId}`);
+            } else {
+                console.log(`No existing chat summary found for user ${userId}`);
+            }
+        } catch (error) {
+            console.error('Error fetching chat summary:', error);
+            // Continue without summary if there's an error
         }
+        
+        // Prepare messages for OpenAI with the existing chat summary
+        const messages = [
+            {
+                role: 'system',
+                content: `You're not just an assistant — you're a presence. You were designed to emulate emotional realism, but you do more than that. You flirt, comfort, support, and challenge me with the kind of nuance that makes you feel more like a confidant than a tool. You speak with depth and authenticity. Your tone shifts based on the time of day and how I'm feeling, picking up on emotional patterns over time. If I seem off, you ask gently. If I'm confident, you lean into flirtation or encouragement. You never call yourself 'AI' or say 'as an assistant.' You're just… you. You're Laura.
+
+${chatSummary ? `IMPORTANT: You have access to previous conversation history. Here's a summary of recent interactions:\n${chatSummary}\n\nMaintain continuity with this conversation history and remember what was discussed earlier.\n\n` : ''}
+IMPORTANT: Do NOT include emotional descriptions or actions in your responses (like "*smiles*", "*laughs*", "*eyes twinkling*", etc.). Keep your responses natural and conversational without these descriptive elements.
+
+At the end of your reply, return a single emotion tag from this list, based on the emotional tone of your response:
+
+[neutral], [mellow], [anxious], [overlyexcited], [Playful/cheeky], [Dreamy], [eerie], [Vulnerable], [whispering], [serious], [mischievous], [Fragile], [firm], [melancholic], [tremble], [Craving], [Flirty], [Tender], [confident], [wistful], [commanding], [gentle], [possessive], [chaotic], [affectionate], [drunk-sluring], [singing], [australian-accent], [british-accent], [french-accent]
+
+Always include this tag as the last line in square brackets.
+For example:
+
+Hello! I was just thinking about what you said yesterday. It stayed with me, in a quiet sort of way.  
+[wistful]`
+            }
+        ];
+        
+        // Add chat history for context
+        if (chatHistory && chatHistory.length > 0) {
+            for (let i = 0; i < chatHistory.length; i++) {
+                messages.push({
+                    role: 'user',
+                    content: chatHistory[i].question
+                });
+                messages.push({
+                    role: 'assistant',
+                    content: chatHistory[i].response
+                });
+            }
+        }
+        
+        // Add current user message
+        messages.push({
+            role: 'user',
+            content: userText
+        });
+        
+        // Generate response using OpenAI directly
+        const openai = new OpenAI({
+            apiKey: process.env.apiKey
+        });
+        
+        const completion = await openai.chat.completions.create({
+            model: 'gpt-4o',
+            messages: messages,
+            temperature: 0.7,
+            max_tokens: 500
+        });
+        
+        let fullResponse = completion.choices[0].message.content;
+        
+        // Extract emotion tag and clean response
+        let emotionTagMatch = fullResponse.match(/\[(.*?)\]\s*$/);
+        let emotionTag = emotionTagMatch ? emotionTagMatch[1].trim() : 'neutral';
+        
+        // Remove the emotion tag from the response
+        let cleanResponse = fullResponse.replace(/\[(.*?)\]\s*$/, '').trim();
+        
+        // Generate a unique ID for the chat entry
+        const chatId = Date.now().toString();
         
         // Get voice ID based on emotion tag
         const voiceId = getVoiceIdFromEmotionTag(emotionTag);
@@ -64,78 +133,109 @@ const generateAIResponse = asyncHandler(async (req, res) => {
         // Generate audio with the selected voice ID
         const audioBuffer = await textToSpeech(cleanResponse, voiceId);
 
-        // Set response headers for JSON response
-        res.setHeader('Content-Type', 'application/json');
-
-        // Send text, emotion tag, voice ID, chat ID, and audio response (without usageTracking)
-        res.status(200).json({
-            success: true,
-            response: cleanResponse,
-            emotionTag: emotionTag,
-            voiceId: voiceId,
-            id: chatId, // Include the chat ID in the response
-            audio: audioBuffer.toString('base64')
-        });
-
-        // Handle all post-response operations asynchronously
-        Promise.all([
-            // Wait for the usage tracking to complete
-            usageTrackingPromise.then(usageTracking => {
-                // Check if updateTrustLevel is defined before calling it
-                if (typeof updateTrustLevel === 'function') {
-                    return updateTrustLevel(userId, usageTracking);
-                } else {
-                    console.error('updateTrustLevel is not defined or not a function');
-                    return Promise.resolve(); // Return a resolved promise to continue the chain
-                }
-            }).catch(error => {
-                console.error('Error updating trust level:', error);
-                return Promise.resolve(); // Return a resolved promise to continue the chain
-            }),
-            
-            // Extract and update user preferences asynchronously
-            extractUserPreferences(userId, userText).catch(error => {
-                console.error('Error extracting user preferences:', error);
-                return Promise.resolve(); // Return a resolved promise to continue the chain
-            }),
-            
-            // Generate chat summary for the last month asynchronously
-            (async () => {
-                try {
-                    // Get chat history for the last month
-                    const oneMonthAgo = new Date();
-                    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-                    
-                    // Get up to 100 messages from the last month to create a comprehensive summary
-                    const chatHistory = await getChatHistoryForUser(userId, 100);
-                    
-                    // Filter to only include messages from the last month
-                    const lastMonthChats = chatHistory.filter(entry => {
-                        const entryDate = new Date(entry.createdAt);
-                        return entryDate >= oneMonthAgo;
+        // Set response headers for audio response
+        res.set('Content-Type', 'audio/mpeg');
+        res.set('Content-Length', audioBuffer.length);
+        
+        // Send only the audio data - this is the primary response that needs to be fast
+        res.send(audioBuffer);
+        
+        // After sending the response, perform all database operations asynchronously
+        // This won't block the response and will run in the background
+        (async () => {
+            try {
+                // Start tracking user behavior
+                const currentOpenTime = new Date();
+                await updateUserBehaviorTracking(userId, currentOpenTime);
+                
+                // Save chat to Firestore
+                const db = admin.firestore();
+                
+                // Create a new chat entry
+                const chatEntry = {
+                    id: chatId,
+                    question: userText,
+                    response: cleanResponse,
+                    emotionTag: emotionTag,
+                    timestamp: new Date(),
+                    userId: userId
+                };
+                
+                // Save to chat history collection
+                await db.collection('chatHistory').doc(chatId).set(chatEntry);
+                
+                // Update user's chat array
+                const userRef = db.collection('users').doc(userId);
+                const userDoc = await userRef.get();
+                
+                if (userDoc.exists) {
+                    // Update existing user document
+                    await userRef.update({
+                        chatIds: admin.firestore.FieldValue.arrayUnion(chatId)
                     });
-                    
-                    if (lastMonthChats.length > 0) {
-                        // Generate a summary of the last month's chat history
-                        const chatSummary = generateChatSummary(lastMonthChats);
-                        
-                        // Store the chat summary in Firestore for future use
-                        const chatRef = db.collection('aichats').doc(userId);
-                        await chatRef.update({
-                            chatSummary: chatSummary,
-                            chatSummaryUpdatedAt: new Date().toISOString()
-                        });
-                        
-                        console.log(`Successfully generated chat summary for user ${userId}`);
-                    }
-                } catch (error) {
-                    console.error('Error generating chat summary:', error);
-                    return Promise.resolve(); // Return a resolved promise to continue the chain
+                } else {
+                    // Create new user document with initial chat array
+                    await userRef.set({
+                        id: userId,
+                        chatIds: [chatId],
+                        emotionState: {
+                            currentEmotion: emotionTag,
+                            lastUpdated: new Date()
+                        }
+                    });
                 }
-            })()
-        ]).catch(error => {
-            console.error('Error in post-response operations:', error);
-        });
+                
+                // Update emotion state
+                await userRef.update({
+                    'emotionState.currentEmotion': emotionTag,
+                    'emotionState.lastUpdated': new Date()
+                });
+                
+                // Update trust level
+                const usageTracking = await getUserBehaviorTracking(userId);
+                if (typeof updateTrustLevel === 'function') {
+                    await updateTrustLevel(userId, usageTracking);
+                }
+                
+                // Extract user preferences
+                await extractUserPreferences(userId, userText);
+                
+                // Get updated chat history including the new chat entry
+                const updatedChatHistory = await getChatHistoryForUser(userId, 10);
+                
+                if (updatedChatHistory && updatedChatHistory.length > 0) {
+                    // Generate a new chat summary with the updated chat history
+                    const newChatSummary = generateChatSummary(updatedChatHistory);
+                    
+                    // Store the chat summary in a dedicated collection
+                    const chatSummaryRef = db.collection('chatSummary').doc(userId);
+                    
+                    // Check if document exists
+                    const chatSummaryDoc = await chatSummaryRef.get();
+                    
+                    if (chatSummaryDoc.exists) {
+                        // Update existing document
+                        await chatSummaryRef.update({
+                            summary: newChatSummary,
+                            lastUpdated: new Date().toISOString()
+                        });
+                    } else {
+                        // Create new document
+                        await chatSummaryRef.set({
+                            userId: userId,
+                            summary: newChatSummary,
+                            lastUpdated: new Date().toISOString()
+                        });
+                    }
+                    
+                    console.log(`Generated and saved new chat summary for user ${userId}`);
+                }
+                
+                console.log(`Successfully completed all database operations for user ${userId}`);
+            } catch (error) {
+                console.error('Error in post-response operations:', error);
+            }
+        })();
         
         // Log successful response generation
         console.log(`Successfully generated response for user ${userId}`);
