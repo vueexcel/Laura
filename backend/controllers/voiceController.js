@@ -87,36 +87,43 @@ Always include this tag as the last line in square brackets.`;
 
         // Save chat entry to Firestore
         try {
-            const chatRef = db.collection('aichats').doc(userId);
-            const chatDoc = await chatRef.get();
+            // Generate a unique ID for the chat entry
+            const chatId = Date.now().toString();
             
-            if (!chatDoc.exists) {
-                // Create a new chat document if it doesn't exist
-                await chatRef.set({
-                    user_id: userId,
-                    chat: [],
-                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                });
-            }
-            
-            // Add the new chat entry
+            // Create the new chat entry
             const newChatEntry = {
+                id: chatId,
+                userId: userId,
                 question: text,
                 response: cleanResponse,
                 emotionTag: emotionTag,
-                createdAt: new Date(),
-                // Generate a unique ID for the chat entry
-                id: Date.now().toString(),
+                timestamp: new Date(),
                 // Add a flag to identify this as a comfort response
                 isComfortResponse: true
             };
             
-            // Update the chat array with the new entry
-            await chatRef.update({
-                chat: admin.firestore.FieldValue.arrayUnion(newChatEntry),
-                updatedAt: admin.firestore.FieldValue.serverTimestamp()
-            });
+            // Save the chat entry to the chatHistory collection
+            await db.collection('chatHistory').doc(chatId).set(newChatEntry);
+            
+            // Update the user's chatIds array
+            const userRef = db.collection('users').doc(userId);
+            const userDoc = await userRef.get();
+            
+            if (userDoc.exists) {
+                // Add the new chatId to the user's chatIds array
+                await userRef.update({
+                    chatIds: admin.firestore.FieldValue.arrayUnion(chatId),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+            } else {
+                // Create a new user document if it doesn't exist
+                await userRef.set({
+                    userId: userId,
+                    chatIds: [chatId],
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+            }
             
             // Get voice ID based on emotion tag
             const voiceId = getVoiceIdFromEmotionTag(emotionTag);
@@ -130,7 +137,7 @@ Always include this tag as the last line in square brackets.`;
                 response: cleanResponse,
                 emotionTag: emotionTag,
                 voiceId: voiceId,
-                id: newChatEntry.id,
+                id: chatId,
                 audio: audioBuffer.toString('base64')
             });
 

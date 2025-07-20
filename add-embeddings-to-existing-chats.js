@@ -29,47 +29,60 @@ async function addEmbeddingsToExistingChats() {
   console.log('===== ADDING EMBEDDINGS TO EXISTING CHAT ENTRIES =====\n');
   
   try {
-    // Get all chat documents
-    const chatSnapshot = await db.collection('aichats').get();
+    // Get all user documents to retrieve chatIds
+    const userSnapshot = await db.collection('users').get();
     
-    if (chatSnapshot.empty) {
-      console.log('No chat documents found in Firestore.');
+    if (userSnapshot.empty) {
+      console.log('No user documents found in Firestore.');
       return;
     }
     
-    console.log(`Found ${chatSnapshot.size} chat documents.`);
+    console.log(`Found ${userSnapshot.size} user documents.`);
     
-    // Process each chat document
-    for (const doc of chatSnapshot.docs) {
-      const chatData = doc.data();
-      const userId = chatData.user_id || doc.id;
+    // Process each user document
+    for (const userDoc of userSnapshot.docs) {
+      const userData = userDoc.data();
+      const userId = userData.userId || userDoc.id;
       
-      if (!chatData.chat || !Array.isArray(chatData.chat) || chatData.chat.length === 0) {
-        console.log(`Skipping document ${doc.id}: No chat entries found.`);
+      if (!userData.chatIds || !Array.isArray(userData.chatIds) || userData.chatIds.length === 0) {
+        console.log(`Skipping user ${userId}: No chat IDs found.`);
         continue;
       }
       
-      console.log(`Processing document ${doc.id} with ${chatData.chat.length} chat entries...`);
+      console.log(`Processing user ${userId} with ${userData.chatIds.length} chat entries...`);
       
       let updatedCount = 0;
       let skippedCount = 0;
       
       // Process each chat entry
-      for (let i = 0; i < chatData.chat.length; i++) {
-        const entry = chatData.chat[i];
+      for (const chatId of userData.chatIds) {
+        // Get the chat entry from the chatHistory collection
+        const chatEntryRef = db.collection('chatHistory').doc(chatId);
+        const chatEntryDoc = await chatEntryRef.get();
+        
+        if (!chatEntryDoc.exists) {
+          console.log(`Skipping chat entry ${chatId}: Document not found.`);
+          continue;
+        }
+        
+        const chatEntry = chatEntryDoc.data();
         
         // Skip entries that already have embeddings
-        if (entry.embeddings) {
+        if (chatEntry.embeddings) {
           skippedCount++;
           continue;
         }
         
         try {
           // Generate embeddings for the question
-          const questionEmbeddings = await generateEmbeddings(entry.question);
+          const questionEmbeddings = await generateEmbeddings(chatEntry.question);
           
-          // Add embeddings to the chat entry
-          chatData.chat[i].embeddings = questionEmbeddings;
+          // Update the chat entry with embeddings
+          await chatEntryRef.update({
+            embeddings: questionEmbeddings,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+          
           updatedCount++;
           
           // Log progress every 5 entries
@@ -77,21 +90,11 @@ async function addEmbeddingsToExistingChats() {
             console.log(`Generated embeddings for ${updatedCount} entries so far...`);
           }
         } catch (error) {
-          console.error(`Error generating embeddings for entry ${i}: ${error.message}`);
+          console.error(`Error generating embeddings for chat entry ${chatId}: ${error.message}`);
         }
       }
       
-      // Update the document in Firestore
-      if (updatedCount > 0) {
-        await db.collection('aichats').doc(doc.id).update({
-          chat: chatData.chat,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-        
-        console.log(`Updated document ${doc.id}: Added embeddings to ${updatedCount} entries, skipped ${skippedCount} entries.`);
-      } else {
-        console.log(`No updates needed for document ${doc.id}: All ${skippedCount} entries already have embeddings.`);
-      }
+      console.log(`Completed processing for user ${userId}: Added embeddings to ${updatedCount} entries, skipped ${skippedCount} entries.`);
     }
     
     console.log('\nFinished adding embeddings to existing chat entries.');

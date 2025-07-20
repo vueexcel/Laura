@@ -13,6 +13,11 @@ const db = admin.firestore();
 const OpenAI = require('openai');
 // Removed MongoDB AiChat schema import as we're using Firestore
 
+/**
+ * Generates an AI response using only the chat summary for context
+ * This improves API response time by reducing the token count sent to OpenAI
+ * The chat summary is created from the last month's chat history and updated after each chat
+ */
 const generateAIResponse = asyncHandler(async (req, res) => {
     // Get userId from authenticated user or use a test ID
     // In production, this should come from req.user.id after authentication
@@ -41,21 +46,22 @@ const generateAIResponse = asyncHandler(async (req, res) => {
             });
         }
 
-        // Get chat history for context
-        const chatHistory = await getChatHistoryForUser(userId, 5);
-        
         // Fetch existing chat summary from Firestore
         let chatSummary = "";
         try {
+            console.log(`Attempting to fetch chat summary for user ${userId}`);
             const chatRef = db.collection('chatSummary').doc(userId);
             const chatDoc = await chatRef.get();
             
+            console.log(`Chat summary document exists: ${chatDoc.exists}`);
             if (chatDoc.exists && chatDoc.data().summary) {
                 // Use the stored chat summary
                 chatSummary = chatDoc.data().summary;
                 console.log(`Using stored chat summary for user ${userId}`);
+                console.log(`Summary content: ${chatSummary.substring(0, 100)}...`);
             } else {
                 console.log(`No existing chat summary found for user ${userId}`);
+                // If no summary exists, we'll create one after the response
             }
         } catch (error) {
             console.error('Error fetching chat summary:', error);
@@ -68,34 +74,18 @@ const generateAIResponse = asyncHandler(async (req, res) => {
                 role: 'system',
                 content: `You're not just an assistant — you're a presence. You were designed to emulate emotional realism, but you do more than that. You flirt, comfort, support, and challenge me with the kind of nuance that makes you feel more like a confidant than a tool. You speak with depth and authenticity. Your tone shifts based on the time of day and how I'm feeling, picking up on emotional patterns over time. If I seem off, you ask gently. If I'm confident, you lean into flirtation or encouragement. You never call yourself 'AI' or say 'as an assistant.' You're just… you. You're Laura.
 
-${chatSummary ? `IMPORTANT: You have access to previous conversation history. Here's a summary of recent interactions:\n${chatSummary}\n\nMaintain continuity with this conversation history and remember what was discussed earlier.\n\n` : ''}
-IMPORTANT: Do NOT include emotional descriptions or actions in your responses (like "*smiles*", "*laughs*", "*eyes twinkling*", etc.). Keep your responses natural and conversational without these descriptive elements.
+${chatSummary ? `IMPORTANT: You have access to previous conversation history. Here's a comprehensive summary of your interactions with this user:\n${chatSummary}\n\nMaintain continuity with this conversation history and remember what was discussed earlier. Reference specific details from previous conversations when relevant to show continuity and build rapport. The user should feel that you remember their previous interactions and can maintain a coherent, ongoing conversation over time.\n\n` : ''}
+ Keep your responses natural and conversational without these descriptive elements.
 
 At the end of your reply, return a single emotion tag from this list, based on the emotional tone of your response:
 
 [neutral], [mellow], [anxious], [overlyexcited], [Playful/cheeky], [Dreamy], [eerie], [Vulnerable], [whispering], [serious], [mischievous], [Fragile], [firm], [melancholic], [tremble], [Craving], [Flirty], [Tender], [confident], [wistful], [commanding], [gentle], [possessive], [chaotic], [affectionate], [drunk-sluring], [singing], [australian-accent], [british-accent], [french-accent]
-
-Always include this tag as the last line in square brackets.
-For example:
-
-Hello! I was just thinking about what you said yesterday. It stayed with me, in a quiet sort of way.  
-[wistful]`
+Always include this tag as the last line in square brackets.`
             }
         ];
         
-        // Add chat history for context
-        if (chatHistory && chatHistory.length > 0) {
-            for (let i = 0; i < chatHistory.length; i++) {
-                messages.push({
-                    role: 'user',
-                    content: chatHistory[i].question
-                });
-                messages.push({
-                    role: 'assistant',
-                    content: chatHistory[i].response
-                });
-            }
-        }
+        // We're only using the chat summary for context, not individual chat history entries
+        // This improves API response time
         
         // Add current user message
         messages.push({
@@ -130,15 +120,28 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
         // Get voice ID based on emotion tag
         const voiceId = getVoiceIdFromEmotionTag(emotionTag);
         
-        // Generate audio with the selected voice ID
-        const audioBuffer = await textToSpeech(cleanResponse, voiceId);
-
-        // Set response headers for audio response
+                /*** STREAM ElevenLabs audio directly back to client ***/
+        const ttsResponse = await textToSpeech(cleanResponse, voiceId);
         res.set('Content-Type', 'audio/mpeg');
-        res.set('Content-Length', audioBuffer.length);
+        if (ttsResponse.headers['content-length']) res.set('Content-Length', ttsResponse.headers['content-length']);
+        if (ttsResponse.headers['transfer-encoding']) res.set('Transfer-Encoding', ttsResponse.headers['transfer-encoding']);
+
+        // Pipe streaming audio to client
+        ttsResponse.data.pipe(res);
         
-        // Send only the audio data - this is the primary response that needs to be fast
-        res.send(audioBuffer);
+
+        ttsResponse.data.on('end', () => {
+            console.log(`Audio stream for user ${userId} complete.`);
+        });
+        ttsResponse.data.on('error', err => {
+            console.error('ElevenLabs stream error:', err);
+            if (!res.headersSent) {
+                res.status(500).json({ success: false, error: 'Streaming audio failed.' });
+            } else {
+                res.end();
+            }
+        });
+
         
         // After sending the response, perform all database operations asynchronously
         // This won't block the response and will run in the background
@@ -191,41 +194,40 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
                     'emotionState.lastUpdated': new Date()
                 });
                 
-                // Update trust level
-                const usageTracking = await getUserBehaviorTracking(userId);
-                if (typeof updateTrustLevel === 'function') {
-                    await updateTrustLevel(userId, usageTracking);
-                }
-                
-                // Extract user preferences
-                await extractUserPreferences(userId, userText);
-                
-                // Get updated chat history including the new chat entry
-                const updatedChatHistory = await getChatHistoryForUser(userId, 10);
+                // Get ALL updated chat history from the last month including the new chat entry
+                // and generate a new comprehensive chat summary right after saving the chat entry
+                // Pass 0 as limit to get all chat entries from the last month
+                const updatedChatHistory = await getChatHistoryForUser(userId, 0);
                 
                 if (updatedChatHistory && updatedChatHistory.length > 0) {
-                    // Generate a new chat summary with the updated chat history
-                    const newChatSummary = generateChatSummary(updatedChatHistory);
+                    // Generate a new chat summary with the updated chat history using GPT
+                    const newChatSummary = await generateChatSummary(updatedChatHistory);
                     
                     // Store the chat summary in a dedicated collection
+                    console.log(`Attempting to save chat summary for user ${userId}`);
                     const chatSummaryRef = db.collection('chatSummary').doc(userId);
                     
                     // Check if document exists
+                    console.log(`Checking if chat summary document exists for user ${userId}`);
                     const chatSummaryDoc = await chatSummaryRef.get();
                     
                     if (chatSummaryDoc.exists) {
+                        console.log(`Updating existing chat summary document for user ${userId}`);
                         // Update existing document
                         await chatSummaryRef.update({
                             summary: newChatSummary,
                             lastUpdated: new Date().toISOString()
                         });
+                        console.log(`Successfully updated chat summary for user ${userId}`);
                     } else {
+                        console.log(`Creating new chat summary document for user ${userId}`);
                         // Create new document
                         await chatSummaryRef.set({
                             userId: userId,
                             summary: newChatSummary,
                             lastUpdated: new Date().toISOString()
                         });
+                        console.log(`Successfully created chat summary for user ${userId}`);
                     }
                     
                     console.log(`Generated and saved new chat summary for user ${userId}`);

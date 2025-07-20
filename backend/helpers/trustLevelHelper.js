@@ -35,8 +35,8 @@ const TRUST_LEVEL_NAMES = {
  */
 async function getTrustLevel(userId) {
   try {
-    const chatRef = db.collection('aichats').doc(userId);
-    const chatDoc = await chatRef.get();
+    const userRef = db.collection('users').doc(userId);
+    const userDoc = await userRef.get();
     
     // Default trust level structure
     const defaultTrustData = {
@@ -53,11 +53,11 @@ async function getTrustLevel(userId) {
       }
     };
     
-    if (!chatDoc.exists || !chatDoc.data().trustLevel) {
+    if (!userDoc.exists || !userDoc.data().trustLevel) {
       return defaultTrustData;
     }
     
-    return chatDoc.data().trustLevel;
+    return userDoc.data().trustLevel;
   } catch (error) {
     console.error('Error retrieving trust level:', error);
     throw new Error('Failed to retrieve trust level: ' + error.message);
@@ -149,8 +149,8 @@ async function updateTrustLevel(userId, usageTracking, chatData = null) {
     };
     
     // Update in Firestore
-    const chatRef = db.collection('aichats').doc(userId);
-    await chatRef.update({
+    const userRef = db.collection('users').doc(userId);
+    await userRef.update({
       trustLevel: updatedTrustData
     });
     

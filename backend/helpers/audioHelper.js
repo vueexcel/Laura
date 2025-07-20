@@ -59,33 +59,32 @@ async function validateText(text) {
     }
 }
 
-async function textToSpeech(text, voiceId = voiceIdMap['neutral']) {
+
+// returns the streaming http response from ElevenLabs
+async function textToSpeech(text, voiceId) {
     await validateText(text);
 
-    try {
-        const response = await axios({
-            method: 'post',
-            url: `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`,
-            headers: {
-                'xi-api-key': process.env.labapiKey,
-                'Content-Type': 'application/json'
-            },
-            data: {
-                text: text,
-                model_id: 'eleven_flash_v2_5',
-                voice_settings: {
-                    stability: 0.5,
-                    similarity_boost: 0.8
-                }
-            },
-            responseType: 'arraybuffer'
-        });
+    // Use axios with responseType: 'stream'
+    const response = await axios({
+        method: 'post',
+        url: `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`,
+        headers: {
+            'xi-api-key': process.env.labapiKey,
+            'Content-Type': 'application/json'
+        },
+        data: {
+            text: text,
+            model_id: 'eleven_flash_v2_5',
+            voice_settings: {
+                stability: 0.5,
+                similarity_boost: 0.8
+            }
+        },
+        responseType: 'stream'
+    });
 
-        return Buffer.from(response.data);
-    } catch (error) {
-        console.error('Error in text to speech conversion:', error.response?.data || error.message);
-        throw new Error('Failed to convert text to speech: ' + (error.response?.data || error.message));
-    }
+    return response;
 }
+
 
 module.exports = { textToSpeech, getVoiceIdFromEmotionTag };

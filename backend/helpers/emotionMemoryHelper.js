@@ -32,11 +32,11 @@ const defaultEmotionState = {
  */
 async function getEmotionState(userId) {
   try {
-    const chatRef = db.collection('aichats').doc(userId);
-    const chatDoc = await chatRef.get();
+    const userRef = db.collection('users').doc(userId);
+    const userDoc = await userRef.get();
     
-    if (!chatDoc.exists || !chatDoc.data().emotionState) {
-      // If chat document doesn't exist or has no emotion state, create default
+    if (!userDoc.exists || !userDoc.data().emotionState) {
+      // If user document doesn't exist or has no emotion state, create default
       const defaultState = { ...defaultEmotionState };
       
       // Create a state with timestamp for the history
@@ -48,18 +48,18 @@ async function getEmotionState(userId) {
       // Initialize emotion history with the default state
       const emotionHistory = [stateWithTimestamp];
       
-      // If chat document doesn't exist, create it
-      if (!chatDoc.exists) {
-        await chatRef.set({
-          chat: [],
+      // If user document doesn't exist, create it
+      if (!userDoc.exists) {
+        await userRef.set({
+          chatIds: [],
           emotionState: defaultState,
           emotionHistory: emotionHistory,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
       } else {
-        // If chat document exists but has no emotion state, add it
-        await chatRef.update({
+        // If user document exists but has no emotion state, add it
+        await userRef.update({
           emotionState: defaultState,
           emotionHistory: emotionHistory,
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -69,7 +69,7 @@ async function getEmotionState(userId) {
       return defaultState;
     }
     
-    return chatDoc.data().emotionState;
+    return userDoc.data().emotionState;
   } catch (error) {
     console.error('Error getting emotion state:', error);
     // Return default state if there's an error
@@ -227,8 +227,8 @@ Respond ONLY with a valid JSON object containing the emotions you detect in the 
     
     // Save updated state to Firestore and add to emotion history
     try {
-      const chatRef = db.collection('aichats').doc(userId);
-      const chatDoc = await chatRef.get();
+      const userRef = db.collection('users').doc(userId);
+      const userDoc = await userRef.get();
       
       // Create a copy of the updated state with a timestamp
       const stateWithTimestamp = {
@@ -238,8 +238,8 @@ Respond ONLY with a valid JSON object containing the emotions you detect in the 
       
       // Get existing emotion history or create a new array
       let emotionHistory = [];
-      if (chatDoc.exists && chatDoc.data().emotionHistory) {
-        emotionHistory = chatDoc.data().emotionHistory;
+      if (userDoc.exists && userDoc.data().emotionHistory) {
+        emotionHistory = userDoc.data().emotionHistory;
       }
       
       // Add the current state to the history
@@ -251,7 +251,7 @@ Respond ONLY with a valid JSON object containing the emotions you detect in the 
       }
       
       // Update Firestore with the current state and history
-      await chatRef.update({
+      await userRef.update({
         emotionState: updatedState,
         emotionHistory: emotionHistory,
         updatedAt: admin.firestore.FieldValue.serverTimestamp()

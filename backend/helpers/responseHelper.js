@@ -17,24 +17,29 @@ const openai = new OpenAI({
  * @param {number} maxLength - Maximum length of summary in characters
  * @returns {string} - Summary of recent conversations
  */
-function generateChatSummary(chatHistory, maxLength = 500) {
+function generateChatSummary(chatHistory, maxLength = 800) {
     if (!chatHistory || chatHistory.length === 0) {
         return "No previous conversation history.";
     }
 
-    let summary = "Here's a summary of your recent conversations:\n\n";
+    let summary = "Here's a comprehensive summary of your interactions with this user:\n\n";
     
-    // Take the most recent exchanges, up to 5
-    const recentChats = chatHistory.slice(-5);
+    // Take more recent exchanges for a more comprehensive history
+    const maxEntries = 10; // Increased from 5 to provide more context
+    const recentChats = chatHistory.length > maxEntries ? chatHistory.slice(-maxEntries) : chatHistory;
     
     for (const chat of recentChats) {
-        const questionSummary = chat.question.length > 50 ? 
-            `${chat.question.substring(0, 47)}...` : chat.question;
-        const responseSummary = chat.response.length > 50 ? 
-            `${chat.response.substring(0, 47)}...` : chat.response;
+        // Include more of the original content
+        const questionSummary = chat.question.length > 100 ? 
+            `${chat.question.substring(0, 97)}...` : chat.question;
+        const responseSummary = chat.response.length > 100 ? 
+            `${chat.response.substring(0, 97)}...` : chat.response;
         
-        summary += `You: ${questionSummary}\nLaura: ${responseSummary}\n\n`;
+        summary += `User: ${questionSummary}\nLaura: ${responseSummary}\n\n`;
     }
+    
+    // Add a note about the importance of maintaining conversation continuity
+    summary += "Remember to reference specific details from these conversations when relevant to show continuity and build rapport.";
     
     // Truncate if too long
     if (summary.length > maxLength) {
@@ -81,7 +86,7 @@ Hello… I was just thinking about what you said yesterday. It stayed with me, i
 `;
         
         if (chatSummary) {
-            systemContent += "\n\nIMPORTANT: You have access to previous conversation history. Here's a summary of recent interactions:\n" + chatSummary + "\n\nMaintain continuity with this conversation history and remember what was discussed earlier.";
+            systemContent += "\n\nIMPORTANT: You have access to previous conversation history. Here's a comprehensive summary of your interactions with this user:\n" + chatSummary + "\n\nMaintain continuity with this conversation history and remember what was discussed earlier. Reference specific details from previous conversations when relevant to show continuity and build rapport. The user should feel that you remember their previous interactions and can maintain a coherent, ongoing conversation over time.";
         }
         
         const messages = [
