@@ -37,7 +37,8 @@ The default port is `8001`.
 {
   "type": "user_message",
   "userId": "[user_id]",
-  "message": "Hello, Laura!"
+  "message": "Hello, Laura!",
+  "responseMode": "both" // Optional: 'text', 'audio', or 'both' (default)
 }
 ```
 
@@ -47,9 +48,16 @@ Alternatively, you can use:
 {
   "type": "message",
   "userId": "[user_id]",
-  "text": "Hello, Laura!"
+  "text": "Hello, Laura!",
+  "responseMode": "both" // Optional: 'text', 'audio', or 'both' (default)
 }
 ```
+
+**Response Mode Options:**
+
+- `text`: Laura will respond with text only (no audio)
+- `audio`: Laura will respond with audio only (no text)
+- `both`: Laura will respond with both text and audio (default)
 
 #### Audio Message
 
@@ -58,7 +66,8 @@ Alternatively, you can use:
   "type": "audio_message",
   "userId": "[user_id]",
   "audio": "[base64_encoded_audio]",
-  "format": "webm"
+  "format": "webm",
+  "responseMode": "both" // Optional: 'text', 'audio', or 'both' (default)
 }
 ```
 
@@ -123,7 +132,8 @@ Alternatively, you can use:
 {
   "type": "response_complete",
   "messageId": "[message_id]",
-  "emotion": "[emotion_tag]"
+  "emotion": "neutral",
+  "responseMode": "both" // The response mode that was used: 'text', 'audio', or 'both'
 }
 ```
 

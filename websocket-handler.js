@@ -20,7 +20,10 @@ let activeResponseGenerations = new Map();
 
 // Handle user text messages
 async function handleUserMessage(ws, data, sessionData) {
-  const { userId, message, messageId } = data;
+  const { userId, message, messageId, responseMode } = data;
+  
+  // Store response mode in session data (default to 'both' if not specified)
+  sessionData.responseMode = responseMode || sessionData.responseMode || 'both';
   
   // Send thinking status
   ws.send(JSON.stringify({
@@ -130,57 +133,65 @@ Always return your response as a valid JSON object with two keys: response (your
       emotion: emotionTag
     }));
     
-    // Send text response in chunks for real-time display
-    const chunkSize = 10; // Number of characters per chunk
-    for (let i = 0; i < cleanResponse.length; i += chunkSize) {
-      // Check if this response has been interrupted
-      if (activeResponseGenerations.get(userId) !== responseId) {
-        console.log(`Response generation ${responseId} was interrupted`);
-        break;
-      }
-      
-      const textChunk = cleanResponse.substring(i, i + chunkSize);
-      ws.send(JSON.stringify({
-        type: 'text_chunk',
-        text: textChunk,
-        messageId: messageId // Pass through the message ID for timeout handling
-      }));
-      
-      // Small delay between chunks to simulate typing
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-
-    // Get voice ID and generate audio
-    const voiceId = getVoiceIdFromEmotionTag(emotionTag);
-    
-try {
-      const ttsResponse = await textToSpeech(cleanResponse, voiceId);
-    
-      // Send audio in chunks for real-time playback
-      for await (const chunk of ttsResponse.data) {
+    // Send text response in chunks for real-time display if responseMode is 'text' or 'both'
+    if (sessionData.responseMode === 'text' || sessionData.responseMode === 'both') {
+      const chunkSize = 10; // Number of characters per chunk
+      for (let i = 0; i < cleanResponse.length; i += chunkSize) {
         // Check if this response has been interrupted
         if (activeResponseGenerations.get(userId) !== responseId) {
-          console.log(`Audio generation ${responseId} was interrupted`);
+          console.log(`Response generation ${responseId} was interrupted`);
           break;
         }
         
-        // Convert the chunk to base64
-        const audioBase64 = chunk.toString('base64');
-      
-        // Send the chunk to the client
+        const textChunk = cleanResponse.substring(i, i + chunkSize);
         ws.send(JSON.stringify({
-          type: 'audio_chunk',  // Changed type to indicate a chunk
-          audio: audioBase64,
-          format: 'mp3',       // Keep the format to help the client
+          type: 'text_chunk',
+          text: textChunk,
           messageId: messageId // Pass through the message ID for timeout handling
         }));
+        
+        // Small delay between chunks to simulate typing
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
-    } catch (error) {
-      console.error('Error generating audio:', error);
-      ws.send(JSON.stringify({
-        type: 'error',
-        message: 'Error generating audio response'
-      }));
+    } else {
+      console.log(`Skipping text response for user ${userId} (responseMode: ${sessionData.responseMode})`);
+    }
+
+    // Get voice ID and generate audio if responseMode is 'audio' or 'both'
+    if (sessionData.responseMode === 'audio' || sessionData.responseMode === 'both') {
+      const voiceId = getVoiceIdFromEmotionTag(emotionTag);
+      
+      try {
+        const ttsResponse = await textToSpeech(cleanResponse, voiceId);
+      
+        // Send audio in chunks for real-time playback
+        for await (const chunk of ttsResponse.data) {
+          // Check if this response has been interrupted
+          if (activeResponseGenerations.get(userId) !== responseId) {
+            console.log(`Audio generation ${responseId} was interrupted`);
+            break;
+          }
+          
+          // Convert the chunk to base64
+          const audioBase64 = chunk.toString('base64');
+        
+          // Send the chunk to the client
+          ws.send(JSON.stringify({
+            type: 'audio_chunk',  // Changed type to indicate a chunk
+            audio: audioBase64,
+            format: 'mp3',       // Keep the format to help the client
+            messageId: messageId // Pass through the message ID for timeout handling
+          }));
+        }
+      } catch (error) {
+        console.error('Error generating audio:', error);
+        ws.send(JSON.stringify({
+          type: 'error',
+          message: 'Error generating audio response'
+        }));
+      }
+    } else {
+      console.log(`Skipping audio response for user ${userId} (responseMode: ${sessionData.responseMode})`);
     }
 
     // Generate unique ID for chat entry
@@ -270,7 +281,8 @@ try {
     ws.send(JSON.stringify({
       type: 'response_complete',
       messageId: messageId || chatId, // Use the original messageId if available
-      emotion: emotionTag
+      emotion: emotionTag,
+      responseMode: sessionData.responseMode // Include the response mode used
     }));
     
     // Clear the active response generation
@@ -323,8 +335,13 @@ async function handleAudioMessage(ws, data, sessionData) {
       text: transcribedText
     }));
     
-    // Process the transcribed text as a user message
-    await handleUserMessage(ws, { userId, message: transcribedText, messageId }, sessionData);
+    // Process the transcribed text as a user message (preserving responseMode)
+    await handleUserMessage(ws, { 
+      userId, 
+      message: transcribedText, 
+      messageId,
+      responseMode: data.responseMode || sessionData.responseMode
+    }, sessionData);
     
   } catch (error) {
     console.error('Error processing audio message:', error);
@@ -383,7 +400,8 @@ module.exports = function(wss) {
       userId,
       conversationHistory: [],
       isTyping: false,
-      lastActivity: Date.now()
+      lastActivity: Date.now(),
+      responseMode: 'both' // Default to both text and audio responses
     };
 
     ws.send(JSON.stringify({
@@ -418,6 +436,17 @@ module.exports = function(wss) {
 
         sessionData.lastActivity = Date.now();
 
+        // Extract responseMode if present and update session data
+        if (data.responseMode) {
+          // Validate responseMode value
+          if (['text', 'audio', 'both'].includes(data.responseMode)) {
+            sessionData.responseMode = data.responseMode;
+            console.log(`Response mode set to: ${data.responseMode} for user ${userId}`);
+          } else {
+            console.warn(`Invalid responseMode value: ${data.responseMode}, using default`);
+          }
+        }
+        
         switch (data.type) {
           case 'message':
             // For messages sent with {type: 'message', text: '...'} format
