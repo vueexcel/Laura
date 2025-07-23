@@ -6,7 +6,8 @@
   "scripts": {
     "test": "npm update",
     "run": "node handler.js",
-    "server": "nodemon handler.js"
+    "server": "nodemon handler.js",
+    "start": "node handler.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.481.0",
