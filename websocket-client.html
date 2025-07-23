@@ -153,6 +153,56 @@
         @keyframes blink {
             50% { opacity: 1; }
         }
+        /* Voice activity indicator */
+        .voice-activity {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background-color: #2c3e50;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            z-index: 100;
+        }
+        .voice-activity .mic-icon {
+            width: 24px;
+            height: 24px;
+            background-color: white;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 0-.9.36-.98.85C16.52 14.2 14.47 16 12 16s-4.52-1.8-4.93-4.15c-.08-.49-.49-.85-.98-.85-.61 0-1.09.54-1 1.14.49 3 2.89 5.35 5.91 5.78V20c0 .55.45 1 1 1s1-.45 1-1v-2.08c3.02-.43 5.42-2.78 5.91-5.78.1-.6-.39-1.14-1-1.14z'/%3E%3C/svg%3E") no-repeat 50% 50%;
+            -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 0-.9.36-.98.85C16.52 14.2 14.47 16 12 16s-4.52-1.8-4.93-4.15c-.08-.49-.49-.85-.98-.85-.61 0-1.09.54-1 1.14.49 3 2.89 5.35 5.91 5.78V20c0 .55.45 1 1 1s1-.45 1-1v-2.08c3.02-.43 5.42-2.78 5.91-5.78.1-.6-.39-1.14-1-1.14z'/%3E%3C/svg%3E") no-repeat 50% 50%;
+        }
+        .voice-activity.active {
+            background-color: #e74c3c;
+            animation: pulse 1.5s infinite;
+        }
+        .voice-activity.listening {
+            background-color: #3498db;
+        }
+        /* Audio visualization */
+        .audio-visualizer {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 30px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-end;
+            padding: 0 10px;
+        }
+        .audio-bar {
+            width: 3px;
+            height: 5px;
+            background-color: rgba(255, 255, 255, 0.7);
+            margin: 0 1px;
+            border-radius: 1px;
+            transition: height 0.1s ease;
+        }
     </style>
 </head>
 <body>
@@ -187,6 +237,14 @@
         </div>
     </div>
     
+    <!-- Voice activity floating button with visualizer -->
+    <div class="voice-activity" id="voice-activity">
+        <div class="mic-icon"></div>
+        <div class="audio-visualizer" id="audio-visualizer">
+            <!-- Audio bars will be added dynamically -->
+        </div>
+    </div>
+    
     <audio id="audio-player" style="display: none;"></audio>
     
     <script>
@@ -200,6 +258,8 @@
         const statusDot = document.getElementById('status-dot');
         const connectionStatus = document.getElementById('connection-status');
         const typingIndicator = document.getElementById('typing-indicator');
+        const voiceActivity = document.getElementById('voice-activity');
+        const audioVisualizer = document.getElementById('audio-visualizer');
         
         // WebSocket Connection
         let socket;
@@ -207,6 +267,37 @@
         let audioChunks = [];
         let isRecording = false;
         let lastAudioUrl = null;
+        let currentMessageId = null;
+        let isLauraResponding = false;
+        
+        // Audio processing variables
+        let mediaSource = null;
+        let sourceBuffer = null;
+        let audioQueue = [];
+        let isAudioInitialized = false;
+        
+        // Voice activity detection variables
+        let audioContext;
+        let analyser;
+        let microphone;
+        let isListening = false;
+        let audioVisualizerBars = [];
+        let voiceDetectionThreshold = 15; // Adjust based on testing
+        let silenceTimer = null;
+        let continuousAudioStream = null;
+        let voiceActivityTimeout = null;
+        
+        // Create audio visualizer bars
+        function createAudioVisualizer() {
+            // Create 20 bars for the visualizer
+            for (let i = 0; i < 20; i++) {
+                const bar = document.createElement('div');
+                bar.className = 'audio-bar';
+                audioVisualizer.appendChild(bar);
+                audioVisualizerBars.push(bar);
+            }
+        }
+        createAudioVisualizer();
         
         // Connect to WebSocket server
         function connectWebSocket() {
@@ -223,6 +314,12 @@
                 statusDot.classList.remove('offline');
                 connectionStatus.textContent = 'Connected';
                 addStatusMessage('Connected to Laura');
+                
+                // Initialize MediaSource for chunked audio playback
+                initMediaSource();
+                
+                // Start continuous audio monitoring when connected
+                startContinuousListening();
             };
             
             socket.onmessage = (event) => {
@@ -233,12 +330,28 @@
                     case 'start_conversation':
                         addStatusMessage('Conversation started');
                         break;
+                    
+                    case 'text_chunk':
+                        // Handle text chunk for real-time display
+                        if (!isLauraResponding) {
+                            // First chunk of a new response
+                            isLauraResponding = true;
+                            currentMessageId = data.messageId;
+                            addAssistantMessage('', data.messageId); // Create empty message container
+                        }
                         
-                    case 'audio_response':
-                        // For audio-only mode, we add a placeholder message to show the assistant responded
-                        // You can customize this message or remove it if you prefer a pure audio experience
-                        addAssistantMessage('🔊 Audio response received');
-                        handleAudioResponse(data.audio, data.format);
+                        // Append text chunk to the last assistant message
+                        appendToLastAssistantMessage(data.text);
+                        break;
+                        
+                    case 'audio_chunk':
+                        // Handle audio chunk for real-time playback
+                        handleAudioChunk(data.audio, data.format);
+                        break;
+                        
+                    case 'audio_complete':
+                        // Audio stream is complete
+                        console.log('Audio playback complete');
                         break;
                         
                     case 'thinking_status':
@@ -261,8 +374,22 @@
                         break;
                         
                     case 'response_complete':
-                        // Message is complete, scroll to bottom
+                        // Message is complete
+                        isLauraResponding = false;
+                        currentMessageId = null;
                         chatMessages.scrollTop = chatMessages.scrollHeight;
+                        
+                        // Re-enable voice activity after response is complete
+                        if (!isListening) {
+                            startContinuousListening();
+                        }
+                        break;
+                        
+                    case 'response_interrupted':
+                        // Response was interrupted
+                        addStatusMessage('Response interrupted');
+                        isLauraResponding = false;
+                        currentMessageId = null;
                         break;
                 }
             };
@@ -274,6 +401,9 @@
                 connectionStatus.textContent = 'Disconnected';
                 addStatusMessage('Disconnected from Laura. Trying to reconnect...');
                 
+                // Stop continuous listening when disconnected
+                stopContinuousListening();
+                
                 // Try to reconnect after 3 seconds
                 setTimeout(connectWebSocket, 3000);
             };
@@ -282,6 +412,9 @@
                 console.error('WebSocket error:', error);
                 statusDot.classList.add('offline');
                 connectionStatus.textContent = 'Error';
+                
+                // Stop continuous listening on error
+                stopContinuousListening();
             };
         }
         
@@ -296,19 +429,32 @@
         
         recordButton.addEventListener('click', toggleRecording);
         playAudioButton.addEventListener('click', playLastAudio);
+        voiceActivity.addEventListener('click', toggleVoiceActivity);
         
         // Functions
         function sendMessage() {
             const message = messageInput.value.trim();
             if (message && socket.readyState === WebSocket.OPEN) {
+                // If Laura is currently responding, send interrupt signal
+                if (isLauraResponding) {
+                    socket.send(JSON.stringify({
+                        type: 'interrupt',
+                        userId: 'test_user_id'
+                    }));
+                }
+                
                 // Add user message to chat
                 addUserMessage(message);
+                
+                // Generate a unique message ID
+                const messageId = Date.now().toString();
                 
                 // Send message to server
                 socket.send(JSON.stringify({
                     type: 'user_message',
                     userId: 'test_user_id',
-                    message: message
+                    message: message,
+                    messageId: messageId
                 }));
                 
                 // Clear input
@@ -316,28 +462,61 @@
             }
         }
         
-        // Audio-only mode - no text chunks to handle
+        // Initialize MediaSource for chunked audio playback
+        function initMediaSource() {
+            if ('MediaSource' in window) {
+                mediaSource = new MediaSource();
+                audioPlayer.src = URL.createObjectURL(mediaSource);
+                
+                mediaSource.addEventListener('sourceopen', () => {
+                    sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+                    sourceBuffer.mode = 'sequence';
+                    isAudioInitialized = true;
+                    
+                    sourceBuffer.addEventListener('updateend', () => {
+                        processAudioQueue();
+                    });
+                });
+            } else {
+                console.error('MediaSource API not supported');
+            }
+        }
         
-        function handleAudioResponse(audioBase64, format) {
-            // Convert base64 to blob
+        // Handle audio chunks for real-time playback
+        function handleAudioChunk(audioBase64, format) {
+            // Convert base64 to ArrayBuffer
             const byteCharacters = atob(audioBase64);
             const byteNumbers = new Array(byteCharacters.length);
             for (let i = 0; i < byteCharacters.length; i++) {
                 byteNumbers[i] = byteCharacters.charCodeAt(i);
             }
             const byteArray = new Uint8Array(byteNumbers);
-            const blob = new Blob([byteArray], { type: `audio/${format}` });
             
-            // Create URL for the blob
-            const audioUrl = URL.createObjectURL(blob);
-            lastAudioUrl = audioUrl;
+            // Add to audio queue
+            audioQueue.push(byteArray);
             
-            // Set audio source and play
-            audioPlayer.src = audioUrl;
-            audioPlayer.play();
+            // Process queue if possible
+            if (isAudioInitialized && !sourceBuffer.updating) {
+                processAudioQueue();
+            }
             
             // Enable play button
             playAudioButton.disabled = false;
+        }
+        
+        // Process audio queue
+        function processAudioQueue() {
+            if (audioQueue.length > 0 && !sourceBuffer.updating) {
+                const chunk = audioQueue.shift();
+                try {
+                    sourceBuffer.appendBuffer(chunk);
+                    if (!audioPlayer.paused) {
+                        audioPlayer.play().catch(e => console.error('Error playing audio:', e));
+                    }
+                } catch (e) {
+                    console.error('Error appending buffer:', e);
+                }
+            }
         }
         
         function handleThinkingStatus(isThinking) {
@@ -360,12 +539,24 @@
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
         
-        function addAssistantMessage(message) {
+        function addAssistantMessage(message, messageId) {
             const messageElement = document.createElement('div');
             messageElement.className = 'message assistant-message';
             messageElement.textContent = message;
+            if (messageId) {
+                messageElement.dataset.messageId = messageId;
+            }
             chatMessages.appendChild(messageElement);
             chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        
+        function appendToLastAssistantMessage(text) {
+            const assistantMessages = document.querySelectorAll('.assistant-message');
+            if (assistantMessages.length > 0) {
+                const lastMessage = assistantMessages[assistantMessages.length - 1];
+                lastMessage.textContent += text;
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
         }
         
         function addStatusMessage(message) {
@@ -376,60 +567,242 @@
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
         
+        // Start continuous audio listening
+        async function startContinuousListening() {
+            if (isListening) return;
+            
+            try {
+                // Request microphone access
+                continuousAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Set up audio context and analyzer
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(continuousAudioStream);
+                
+                // Connect microphone to analyzer
+                microphone.connect(analyser);
+                
+                // Configure analyzer
+                analyser.fftSize = 256;
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+                
+                // Update voice activity UI
+                voiceActivity.classList.add('listening');
+                isListening = true;
+                
+                // Function to detect voice activity
+                function detectVoiceActivity() {
+                    if (!isListening) return;
+                    
+                    // Get frequency data
+                    analyser.getByteFrequencyData(dataArray);
+                    
+                    // Calculate average volume
+                    let sum = 0;
+                    for (let i = 0; i < bufferLength; i++) {
+                        sum += dataArray[i];
+                    }
+                    const average = sum / bufferLength;
+                    
+                    // Update visualizer
+                    updateAudioVisualizer(dataArray);
+                    
+                    // Check if volume is above threshold
+                    if (average > voiceDetectionThreshold) {
+                        // Voice detected
+                        if (!isRecording && !isLauraResponding) {
+                            // Start recording if not already recording and Laura is not responding
+                            startRecording();
+                        }
+                        
+                        // Reset silence timer
+                        if (silenceTimer) {
+                            clearTimeout(silenceTimer);
+                            silenceTimer = null;
+                        }
+                    } else if (isRecording) {
+                        // If recording but volume is below threshold, start silence timer
+                        if (!silenceTimer) {
+                            silenceTimer = setTimeout(() => {
+                                // Stop recording after 1.5 seconds of silence
+                                stopRecording();
+                                silenceTimer = null;
+                            }, 1500);
+                        }
+                    }
+                    
+                    // Continue monitoring
+                    requestAnimationFrame(detectVoiceActivity);
+                }
+                
+                // Start voice detection
+                detectVoiceActivity();
+                
+            } catch (error) {
+                console.error('Error accessing microphone for continuous listening:', error);
+                addStatusMessage('Error accessing microphone. Please check permissions.');
+            }
+        }
+        
+        // Stop continuous audio listening
+        function stopContinuousListening() {
+            if (!isListening) return;
+            
+            // Stop any ongoing recording
+            if (isRecording) {
+                stopRecording();
+            }
+            
+            // Clean up audio context
+            if (microphone) {
+                microphone.disconnect();
+                microphone = null;
+            }
+            
+            if (analyser) {
+                analyser = null;
+            }
+            
+            if (audioContext) {
+                audioContext.close().catch(e => console.error('Error closing audio context:', e));
+                audioContext = null;
+            }
+            
+            // Stop media stream
+            if (continuousAudioStream) {
+                continuousAudioStream.getTracks().forEach(track => track.stop());
+                continuousAudioStream = null;
+            }
+            
+            // Update UI
+            voiceActivity.classList.remove('listening');
+            voiceActivity.classList.remove('active');
+            isListening = false;
+            
+            // Reset visualizer
+            audioVisualizerBars.forEach(bar => {
+                bar.style.height = '5px';
+            });
+        }
+        
+        // Toggle voice activity monitoring
+        function toggleVoiceActivity() {
+            if (isListening) {
+                stopContinuousListening();
+                addStatusMessage('Voice activity monitoring stopped');
+            } else {
+                startContinuousListening();
+                addStatusMessage('Voice activity monitoring started');
+            }
+        }
+        
+        // Update audio visualizer
+        function updateAudioVisualizer(dataArray) {
+            const bufferLength = dataArray.length;
+            const barCount = audioVisualizerBars.length;
+            
+            // Sample the frequency data to match our bar count
+            for (let i = 0; i < barCount; i++) {
+                const index = Math.floor(i * bufferLength / barCount);
+                const value = dataArray[index];
+                
+                // Scale the value (max height 30px)
+                const height = Math.max(5, value / 255 * 30);
+                audioVisualizerBars[i].style.height = `${height}px`;
+            }
+        }
+        
+        // Start recording audio
+        function startRecording() {
+            if (isRecording || !continuousAudioStream) return;
+            
+            try {
+                // Create media recorder from existing stream
+                mediaRecorder = new MediaRecorder(continuousAudioStream);
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = () => {
+                    // If Laura is currently responding, send interrupt signal
+                    if (isLauraResponding) {
+                        socket.send(JSON.stringify({
+                            type: 'interrupt',
+                            userId: 'test_user_id'
+                        }));
+                    }
+                    
+                    // Convert audio chunks to blob
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    
+                    // Read blob as base64
+                    const reader = new FileReader();
+                    reader.readAsDataURL(audioBlob);
+                    reader.onloadend = () => {
+                        // Extract base64 data (remove data URL prefix)
+                        const base64Audio = reader.result.split(',')[1];
+                        
+                        // Generate a unique message ID
+                        const messageId = Date.now().toString();
+                        
+                        // Send audio to server
+                        socket.send(JSON.stringify({
+                            type: 'audio_message',
+                            userId: 'test_user_id',
+                            audio: base64Audio,
+                            format: 'webm',
+                            messageId: messageId
+                        }));
+                        
+                        addStatusMessage('Audio sent, transcribing...');
+                    };
+                };
+                
+                mediaRecorder.start();
+                isRecording = true;
+                voiceActivity.classList.add('active');
+                recordButton.textContent = 'Stop Recording';
+                recordButton.classList.add('recording');
+                
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                addStatusMessage('Error starting recording');
+            }
+        }
+        
+        // Stop recording audio
+        function stopRecording() {
+            if (!isRecording) return;
+            
+            mediaRecorder.stop();
+            isRecording = false;
+            voiceActivity.classList.remove('active');
+            recordButton.textContent = 'Record Audio';
+            recordButton.classList.remove('recording');
+        }
+        
         async function toggleRecording() {
             if (!isRecording) {
-                // Start recording
-                try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    mediaRecorder = new MediaRecorder(stream);
-                    audioChunks = [];
-                    
-                    mediaRecorder.ondataavailable = (event) => {
-                        audioChunks.push(event.data);
-                    };
-                    
-                    mediaRecorder.onstop = () => {
-                        // Convert audio chunks to blob
-                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                        
-                        // Read blob as base64
-                        const reader = new FileReader();
-                        reader.readAsDataURL(audioBlob);
-                        reader.onloadend = () => {
-                            // Extract base64 data (remove data URL prefix)
-                            const base64Audio = reader.result.split(',')[1];
-                            
-                            // Send audio to server
-                            socket.send(JSON.stringify({
-                                type: 'audio_message',
-                                userId: 'test_user_id',
-                                audio: base64Audio,
-                                format: 'webm'
-                            }));
-                            
-                            addStatusMessage('Audio sent, transcribing...');
-                        };
-                    };
-                    
-                    mediaRecorder.start();
-                    isRecording = true;
-                    recordButton.textContent = 'Stop Recording';
-                    recordButton.classList.add('recording');
-                    addStatusMessage('Recording started...');
-                    
-                } catch (error) {
-                    console.error('Error accessing microphone:', error);
-                    addStatusMessage('Error accessing microphone. Please check permissions.');
+                // If continuous listening is active, use that stream
+                if (isListening && continuousAudioStream) {
+                    startRecording();
+                } else {
+                    // Otherwise request a new stream
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                        continuousAudioStream = stream;
+                        startRecording();
+                    } catch (error) {
+                        console.error('Error accessing microphone:', error);
+                        addStatusMessage('Error accessing microphone. Please check permissions.');
+                    }
                 }
             } else {
-                // Stop recording
-                mediaRecorder.stop();
-                isRecording = false;
-                recordButton.textContent = 'Record Audio';
-                recordButton.classList.remove('recording');
-                
-                // Stop all audio tracks
-                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                stopRecording();
             }
         }
         

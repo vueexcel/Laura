@@ -15,9 +15,12 @@ const openai = new OpenAI({
 // In-memory session state management
 const userSessions = new Map();
 
+// Variable to track active response generation for interruption handling
+let activeResponseGenerations = new Map();
+
 // Handle user text messages
 async function handleUserMessage(ws, data, sessionData) {
-  const { userId, message } = data;
+  const { userId, message, messageId } = data;
   
   // Send thinking status
   ws.send(JSON.stringify({
@@ -90,6 +93,10 @@ Always return your response as a valid JSON object with two keys: response (your
       type: 'thinking_status',
       isThinking: false
     }));
+    
+    // Store this active response generation
+    const responseId = Date.now().toString();
+    activeResponseGenerations.set(userId, responseId);
 
     // Get OpenAI response (non-streaming for clean JSON parsing)
     const completion = await openai.chat.completions.create({
@@ -117,23 +124,46 @@ Always return your response as a valid JSON object with two keys: response (your
     console.log(`Extracted response: ${cleanResponse}`);
     console.log(`Extracted emotion: ${emotionTag}`);
 
-    // Audio-only mode: Skip sending text response to client
-    // Text is only generated for conversion to audio
-    // This optimizes response speed by reducing data transmission
-
     // Send emotion detected (needed for voice selection and client-side emotion display)
     ws.send(JSON.stringify({
       type: 'emotion_detected',
       emotion: emotionTag
     }));
+    
+    // Send text response in chunks for real-time display
+    const chunkSize = 10; // Number of characters per chunk
+    for (let i = 0; i < cleanResponse.length; i += chunkSize) {
+      // Check if this response has been interrupted
+      if (activeResponseGenerations.get(userId) !== responseId) {
+        console.log(`Response generation ${responseId} was interrupted`);
+        break;
+      }
+      
+      const textChunk = cleanResponse.substring(i, i + chunkSize);
+      ws.send(JSON.stringify({
+        type: 'text_chunk',
+        text: textChunk,
+        messageId: messageId // Pass through the message ID for timeout handling
+      }));
+      
+      // Small delay between chunks to simulate typing
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
 
     // Get voice ID and generate audio
     const voiceId = getVoiceIdFromEmotionTag(emotionTag);
     
-    try {
+try {
       const ttsResponse = await textToSpeech(cleanResponse, voiceId);
     
+      // Send audio in chunks for real-time playback
       for await (const chunk of ttsResponse.data) {
+        // Check if this response has been interrupted
+        if (activeResponseGenerations.get(userId) !== responseId) {
+          console.log(`Audio generation ${responseId} was interrupted`);
+          break;
+        }
+        
         // Convert the chunk to base64
         const audioBase64 = chunk.toString('base64');
       
@@ -141,15 +171,10 @@ Always return your response as a valid JSON object with two keys: response (your
         ws.send(JSON.stringify({
           type: 'audio_chunk',  // Changed type to indicate a chunk
           audio: audioBase64,
-          format: 'mp3'        // Keep the format to help the client
+          format: 'mp3',       // Keep the format to help the client
+          messageId: messageId // Pass through the message ID for timeout handling
         }));
       }
-    
-      // Signal the end of the audio stream
-      ws.send(JSON.stringify({
-        type: 'audio_complete'
-      }));
-    
     } catch (error) {
       console.error('Error generating audio:', error);
       ws.send(JSON.stringify({
@@ -244,9 +269,14 @@ Always return your response as a valid JSON object with two keys: response (your
     // Send completion message
     ws.send(JSON.stringify({
       type: 'response_complete',
-      messageId: chatId,
+      messageId: messageId || chatId, // Use the original messageId if available
       emotion: emotionTag
     }));
+    
+    // Clear the active response generation
+    if (activeResponseGenerations.get(userId) === responseId) {
+      activeResponseGenerations.delete(userId);
+    }
 
   } catch (error) {
     console.error('Error generating response:', error);
@@ -263,9 +293,9 @@ Always return your response as a valid JSON object with two keys: response (your
   }
 }
 
-// Handle audio messages (unchanged)
+// Handle audio messages
 async function handleAudioMessage(ws, data, sessionData) {
-  const { userId, audio, format } = data;
+  const { userId, audio, format, messageId } = data;
   
   // Send thinking status
   ws.send(JSON.stringify({
@@ -294,7 +324,7 @@ async function handleAudioMessage(ws, data, sessionData) {
     }));
     
     // Process the transcribed text as a user message
-    await handleUserMessage(ws, { userId, message: transcribedText }, sessionData);
+    await handleUserMessage(ws, { userId, message: transcribedText, messageId }, sessionData);
     
   } catch (error) {
     console.error('Error processing audio message:', error);
@@ -398,6 +428,16 @@ module.exports = function(wss) {
             break;
           case 'user_message':
             await handleUserMessage(ws, data, sessionData);
+            break;
+          case 'interrupt':
+            // Handle interruption by clearing the active response
+            if (activeResponseGenerations.has(userId)) {
+              console.log(`Interrupting response for user ${userId}`);
+              activeResponseGenerations.delete(userId);
+              ws.send(JSON.stringify({
+                type: 'response_interrupted'
+              }));
+            }
             break;
 
           case 'audio_message':
