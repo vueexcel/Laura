@@ -2,6 +2,34 @@
 
 This is the backend API for Laura AI, a conversational AI assistant that provides natural language responses and supports audio input/output. The backend is built with Node.js, Express, and uses Firebase Firestore for data storage with vector search capabilities.
 
+## Documentation
+
+Detailed documentation is available in the following files:
+
+- [WebSocket API Documentation](./WEBSOCKET-API-README.md): Details on the WebSocket API endpoints and message formats
+- [Frontend Implementation Guide](./FRONTEND-README.md): Guide for implementing and customizing the frontend
+
+## WebSocket API
+
+In addition to the REST API endpoints, Laura supports a WebSocket API for real-time communication, optimized for audio-only responses.
+
+### Audio-Only Mode
+
+The WebSocket API is configured for audio-only responses to optimize performance:
+
+1. Text responses are not sent to the client, reducing bandwidth usage
+2. Only audio responses are transmitted, improving response time
+3. The server still generates text internally for conversion to audio
+
+### Audio Format
+
+- **Client to Server**: Send audio as base64-encoded WebM format (recommended)
+- **Server to Client**: Audio is sent as base64-encoded MP3
+
+### Important Note on Audio Messages
+
+The WebSocket API is designed to handle complete audio messages in a single transmission. There is no need to chunk audio data when sending from the client to the server.
+
 ## Features
 
 - **Conversational AI**: Uses OpenAI's GPT-4o model to generate human-like responses

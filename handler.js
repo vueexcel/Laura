@@ -1,6 +1,8 @@
 // const serverless = require("serverless-http");
 const express = require("express");
 const app = express();
+const http = require('http');
+const WebSocket = require('ws');
 const dotenv = require('dotenv').config();
 var cors = require('cors')
 const { errorHandler } = require('./backend/middleware/errorMiddleware');
@@ -11,6 +13,9 @@ const morganBody = require('morgan-body');
 const fs = require("fs");
 var cron = require('node-cron');
 app.use("/uploads", express.static("uploads"));
+
+// Create HTTP server
+const server = http.createServer(app);
 
 // Note: MongoDB connection is no longer used as we've switched to Firestore
 
@@ -36,6 +41,11 @@ app.use('/api/transcription', cors(), require('./backend/routes/transcriptionRou
 app.use('/api/response', cors(), require('./backend/routes/responseRoutes'));
 app.use('/api/voice', cors(), require('./backend/routes/voiceRoutes'));
 
+// Add WebSocket client route
+app.get('/api/response/websocket-client', (req, res) => {
+  res.sendFile(path.join(__dirname, 'websocket-client.html'));
+});
+
 app.use(errorHandler);
 app.use((req, res, next) => {
   return res.status(404).json({
@@ -44,7 +54,14 @@ app.use((req, res, next) => {
 });
 
 
-app.listen(process.env.PORT, () => console.log(`Server listening in port ${process.env.PORT} url: http://localhost:${process.env.PORT}`));
+// Initialize WebSocket server
+const wss = new WebSocket.Server({ server });
+
+// Import and initialize WebSocket handlers with the server instance
+require('./websocket-handler')(wss);
+
+// Use HTTP server instead of app.listen
+server.listen(process.env.PORT, () => console.log(`Server listening in port ${process.env.PORT} url: http://localhost:${process.env.PORT}`));
 
 
 // module.exports.api = serverless(app);

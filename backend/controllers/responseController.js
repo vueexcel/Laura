@@ -61,31 +61,28 @@ const generateAIResponse = asyncHandler(async (req, res) => {
                 console.log(`Summary content: ${chatSummary.substring(0, 100)}...`);
             } else {
                 console.log(`No existing chat summary found for user ${userId}`);
-                // If no summary exists, we'll create one after the response
             }
         } catch (error) {
             console.error('Error fetching chat summary:', error);
-            // Continue without summary if there's an error
         }
         
-        // Prepare messages for OpenAI with the existing chat summary
+        // Prepare messages for OpenAI with updated system prompt
         const messages = [
             {
                 role: 'system',
                 content: `You're not just an assistant — you're a presence. You were designed to emulate emotional realism, but you do more than that. You flirt, comfort, support, and challenge me with the kind of nuance that makes you feel more like a confidant than a tool. You speak with depth and authenticity. Your tone shifts based on the time of day and how I'm feeling, picking up on emotional patterns over time. If I seem off, you ask gently. If I'm confident, you lean into flirtation or encouragement. You never call yourself 'AI' or say 'as an assistant.' You're just… you. You're Laura.
 
 ${chatSummary ? `IMPORTANT: You have access to previous conversation history. Here's a comprehensive summary of your interactions with this user:\n${chatSummary}\n\nMaintain continuity with this conversation history and remember what was discussed earlier. Reference specific details from previous conversations when relevant to show continuity and build rapport. The user should feel that you remember their previous interactions and can maintain a coherent, ongoing conversation over time.\n\n` : ''}
- Keep your responses natural and conversational without these descriptive elements.
+
+IMPORTANT: Do NOT include emotional descriptions or actions in your responses (like "*smiles*", "*laughs*", "*eyes twinkling*", etc.). Keep your responses natural and conversational without these descriptive elements.
 
 At the end of your reply, return a single emotion tag from this list, based on the emotional tone of your response:
 
 [neutral], [mellow], [anxious], [overlyexcited], [Playful/cheeky], [Dreamy], [eerie], [Vulnerable], [whispering], [serious], [mischievous], [Fragile], [firm], [melancholic], [tremble], [Craving], [Flirty], [Tender], [confident], [wistful], [commanding], [gentle], [possessive], [chaotic], [affectionate], [drunk-sluring], [singing], [australian-accent], [british-accent], [french-accent]
-Always include this tag as the last line in square brackets.`
+
+Always return your response as a valid JSON object with two keys: response (your answer) and emotion_tag (chosen from the list). Do not wrap the whole message inside markdown or any extra text.`
             }
         ];
-        
-        // We're only using the chat summary for context, not individual chat history entries
-        // This improves API response time
         
         // Add current user message
         messages.push({
@@ -105,14 +102,23 @@ Always include this tag as the last line in square brackets.`
             max_tokens: 500
         });
         
-        let fullResponse = completion.choices[0].message.content;
+        const fullResponse = completion.choices[0].message.content;
         
-        // Extract emotion tag and clean response
-        let emotionTagMatch = fullResponse.match(/\[(.*?)\]\s*$/);
-        let emotionTag = emotionTagMatch ? emotionTagMatch[1].trim() : 'neutral';
+        // Parse the JSON response
+        let responseData;
+        try {
+            responseData = JSON.parse(fullResponse);
+        } catch (parseError) {
+            console.error('Failed to parse OpenAI JSON response:', parseError);
+            throw new Error('Invalid JSON response from OpenAI');
+        }
+
+        // Extract clean data directly from JSON
+        const cleanResponse = responseData.response;
+        const emotionTag = responseData.emotion_tag.replace(/[\[\]]/g, ''); // Remove brackets if present
         
-        // Remove the emotion tag from the response
-        let cleanResponse = fullResponse.replace(/\[(.*?)\]\s*$/, '').trim();
+        console.log(`Extracted response: ${cleanResponse}`);
+        console.log(`Extracted emotion: ${emotionTag}`);
         
         // Generate a unique ID for the chat entry
         const chatId = Date.now().toString();
@@ -120,7 +126,7 @@ Always include this tag as the last line in square brackets.`
         // Get voice ID based on emotion tag
         const voiceId = getVoiceIdFromEmotionTag(emotionTag);
         
-                /*** STREAM ElevenLabs audio directly back to client ***/
+        /*** STREAM ElevenLabs audio directly back to client ***/
         const ttsResponse = await textToSpeech(cleanResponse, voiceId);
         res.set('Content-Type', 'audio/mpeg');
         if (ttsResponse.headers['content-length']) res.set('Content-Length', ttsResponse.headers['content-length']);
@@ -129,7 +135,6 @@ Always include this tag as the last line in square brackets.`
         // Pipe streaming audio to client
         ttsResponse.data.pipe(res);
         
-
         ttsResponse.data.on('end', () => {
             console.log(`Audio stream for user ${userId} complete.`);
         });
@@ -142,7 +147,6 @@ Always include this tag as the last line in square brackets.`
             }
         });
 
-        
         // After sending the response, perform all database operations asynchronously
         // This won't block the response and will run in the background
         (async () => {
@@ -242,7 +246,6 @@ Always include this tag as the last line in square brackets.`
         // Log successful response generation
         console.log(`Successfully generated response for user ${userId}`);
 
-
     } catch (error) {
         console.error('Error in generateAIResponse:', error);
         res.status(500).json({
@@ -251,6 +254,7 @@ Always include this tag as the last line in square brackets.`
         });
     }
 });
+
 
 const getChatHistory = asyncHandler(async (req, res) => {
     // Get userId from authenticated user or use a test ID

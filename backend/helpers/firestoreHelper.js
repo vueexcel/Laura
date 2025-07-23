@@ -39,12 +39,11 @@ async function generateChatSummary(chatHistory, maxLength = 800) {
     // Prepare the chat history in a format suitable for GPT
     let conversationText = "";
     
-    // Use all available chat history for a comprehensive context
-    // If there are too many entries, take the most recent ones up to a reasonable limit
-    const maxEntries = 30; // Increased from 10 to provide more context
-    const recentChats = chatHistory.length > maxEntries ? chatHistory.slice(0, maxEntries) : chatHistory;
+    // Use all chat entries from the last 30 days
+    // Note: The chatHistory is already filtered to the last 30 days in getChatHistoryForUser
+    // We'll use all entries to provide the most comprehensive context
     
-    for (const chat of recentChats) {
+    for (const chat of chatHistory) {
       conversationText += `User: ${chat.question}\nLaura: ${chat.response}\n\n`;
     }
     
@@ -56,10 +55,23 @@ async function generateChatSummary(chatHistory, maxLength = 800) {
           role: 'system',
           content: `You are a helpful assistant that creates comprehensive summaries of conversations. 
           Summarize the following conversation between a user and Laura (an AI assistant).
+          This conversation history spans the last 30 days of interactions.
+          
+          IMPORTANT: Your summary MUST include the following key information when mentioned in the conversation:
+          1. Personal details about the user (name, age, location, occupation, preferences)
+          2. Names of friends, family members, or other people mentioned
+          3. Key life events or moments discussed (birthdays, anniversaries, achievements)
+          4. Recurring topics or interests
+          5. Emotional patterns or significant emotional moments
+          6. Future plans or appointments mentioned
+          7. Any specific requests or preferences the user has expressed
+          
+          Format this information in a structured way that makes it easy to reference in future conversations.
           Include BOTH the user's questions/topics AND Laura's key responses and information provided.
           Capture the overall context, emotional tone, and important details of the conversation.
           Organize the summary in a way that provides clear context for future conversations.
           Include timeframes if apparent (today, yesterday, last week, etc.).
+          Group related topics together and highlight recurring themes or interests.
           Keep the summary under ${maxLength} characters but make it as informative as possible.`
         },
         {
@@ -68,7 +80,7 @@ async function generateChatSummary(chatHistory, maxLength = 800) {
         }
       ],
       temperature: 0.5,
-      max_tokens: 500 // Increased to allow for more detailed summaries
+      max_tokens: 600 // Increased to allow for more detailed summaries with key information
     });
     
     let summary = response.choices[0].message.content.trim();
@@ -78,21 +90,35 @@ async function generateChatSummary(chatHistory, maxLength = 800) {
       summary = summary.substring(0, maxLength - 3) + "...";
     }
     
-    console.log(`Generated comprehensive GPT summary of conversation history`);
+    console.log(`Generated comprehensive GPT summary of conversation history from the last 30 days`);
     return summary;
   } catch (error) {
     console.error('Error generating chat summary with GPT:', error);
     
     // Fallback to simple summary if GPT fails, focusing on questions
-    let fallbackSummary = "Here's a summary of your recent questions:\n\n";
+    let fallbackSummary = "Here's a summary of your recent questions from the last 30 days:\n\n";
     
-    const recentChats = chatHistory.slice(0, 10);
+    // Use all entries from the last 30 days, but limit the output if there are too many
+    // Sort by timestamp (newest first) to prioritize recent conversations
+    const sortedChats = [...chatHistory].sort((a, b) => {
+      const dateA = new Date(a.timestamp.toDate ? a.timestamp.toDate() : a.timestamp);
+      const dateB = new Date(b.timestamp.toDate ? b.timestamp.toDate() : b.timestamp);
+      return dateB - dateA; // Descending order (newest first)
+    });
+    
+    // Take the 50 most recent entries for the fallback summary to avoid it being too long
+    const maxFallbackEntries = 50;
+    const recentChats = sortedChats.length > maxFallbackEntries ? sortedChats.slice(0, maxFallbackEntries) : sortedChats;
     
     for (const chat of recentChats) {
       const questionSummary = chat.question.length > 100 ? 
         `${chat.question.substring(0, 97)}...` : chat.question;
       
-      fallbackSummary += `• ${questionSummary}\n`;
+      // Add timestamp to each entry for better context
+      const entryDate = new Date(chat.timestamp.toDate ? chat.timestamp.toDate() : chat.timestamp);
+      const formattedDate = entryDate.toLocaleDateString();
+      
+      fallbackSummary += `• [${formattedDate}] ${questionSummary}\n`;
     }
     
     if (fallbackSummary.length > maxLength) {
