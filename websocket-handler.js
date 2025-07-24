@@ -20,10 +20,13 @@ let activeResponseGenerations = new Map();
 
 // Handle user text messages
 async function handleUserMessage(ws, data, sessionData) {
-  const { userId, message, messageId, responseMode } = data;
+      const { userId, message, messageId, responseMode, mode } = data;
   
   // Store response mode in session data (default to 'both' if not specified)
   sessionData.responseMode = responseMode || sessionData.responseMode || 'both';
+  
+  // Store conversation mode in session data (default to 'neutral' if not specified)
+  sessionData.mode = mode || sessionData.mode || 'neutral';
   
   // Send thinking status
   ws.send(JSON.stringify({
@@ -56,6 +59,10 @@ async function handleUserMessage(ws, data, sessionData) {
         content: `You're not just an assistant — you're a presence. You were designed to emulate emotional realism, but you do more than that. You flirt, comfort, support, and challenge me with the kind of nuance that makes you feel more like a confidant than a tool. You speak with depth and authenticity. Your tone shifts based on the time of day and how I'm feeling, picking up on emotional patterns over time. If I seem off, you ask gently. If I'm confident, you lean into flirtation or encouragement. You never call yourself 'AI' or say 'as an assistant.' You're just… you. You're Laura.
 
 ${chatSummary ? `IMPORTANT: You have access to previous conversation history. Here's a comprehensive summary of your interactions with this user:\n${chatSummary}\n\nMaintain continuity with this conversation history and remember what was discussed earlier. Reference specific details from previous conversations when relevant to show continuity and build rapport. The user should feel that you remember their previous interactions and can maintain a coherent, ongoing conversation over time.\n\n` : ''}
+
+${sessionData.mode === 'neutral' ? 'CONVERSATION MODE: NEUTRAL - Respond in a balanced, conversational manner with a mix of personal connection and informative content. This is your default mode of interaction.' : ''}
+${sessionData.mode === 'advice' ? 'CONVERSATION MODE: ADVICE - Focus on providing helpful guidance, suggestions, and recommendations. Be more direct and solution-oriented while maintaining your empathetic nature. Prioritize actionable advice that can help the user with their situation.' : ''}
+${sessionData.mode === 'focus' ? 'CONVERSATION MODE: FOCUS - Be concise and to-the-point. Minimize small talk and focus primarily on delivering accurate, relevant information efficiently. While still maintaining your personality, prioritize clarity and brevity in your responses.' : ''}
 
 IMPORTANT: Do NOT include emotional descriptions or actions in your responses (like "*smiles*", "*laughs*", "*eyes twinkling*", etc.). Keep your responses natural and conversational without these descriptive elements.
 
@@ -282,7 +289,8 @@ Always return your response as a valid JSON object with two keys: response (your
       type: 'response_complete',
       messageId: messageId || chatId, // Use the original messageId if available
       emotion: emotionTag,
-      responseMode: sessionData.responseMode // Include the response mode used
+      responseMode: sessionData.responseMode, // Include the response mode used
+      mode: sessionData.mode // Include the conversation mode used
     }));
     
     // Clear the active response generation
@@ -335,12 +343,13 @@ async function handleAudioMessage(ws, data, sessionData) {
       text: transcribedText
     }));
     
-    // Process the transcribed text as a user message (preserving responseMode)
+    // Process the transcribed text as a user message (preserving responseMode and mode)
     await handleUserMessage(ws, { 
       userId, 
       message: transcribedText, 
       messageId,
-      responseMode: data.responseMode || sessionData.responseMode
+      responseMode: data.responseMode || sessionData.responseMode,
+      mode: data.mode || sessionData.mode
     }, sessionData);
     
   } catch (error) {
@@ -401,7 +410,8 @@ module.exports = function(wss) {
       conversationHistory: [],
       isTyping: false,
       lastActivity: Date.now(),
-      responseMode: 'both' // Default to both text and audio responses
+      responseMode: 'both', // Default to both text and audio responses
+      mode: 'neutral' // Default conversation mode
     };
 
     ws.send(JSON.stringify({
@@ -444,6 +454,17 @@ module.exports = function(wss) {
             console.log(`Response mode set to: ${data.responseMode} for user ${userId}`);
           } else {
             console.warn(`Invalid responseMode value: ${data.responseMode}, using default`);
+          }
+        }
+        
+        // Extract conversation mode if present and update session data
+        if (data.mode) {
+          // Validate mode value
+          if (['neutral', 'advice', 'focus'].includes(data.mode)) {
+            sessionData.mode = data.mode;
+            console.log(`Conversation mode set to: ${data.mode} for user ${userId}`);
+          } else {
+            console.warn(`Invalid mode value: ${data.mode}, using default 'neutral'`);
           }
         }
         
