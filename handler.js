@@ -40,6 +40,7 @@ app.use('/api/file', cors(), require('./backend/routes/fileHandlingRouter'));
 app.use('/api/transcription', cors(), require('./backend/routes/transcriptionRoutes'));
 app.use('/api/response', cors(), require('./backend/routes/responseRoutes'));
 app.use('/api/voice', cors(), require('./backend/routes/voiceRoutes'));
+app.use('/api/diary', cors(), require('./backend/routes/diaryRoutes'));
 
 // Add WebSocket client route
 app.get('/api/response/websocket-client', (req, res) => {
