@@ -171,25 +171,24 @@ Always return your response as a valid JSON object with two keys: response (your
       try {
         const ttsResponse = await textToSpeech(cleanResponse, voiceId);
       
-        // Send audio in chunks for real-time playback
+        // Capture the audio chunks and convert to base64
+        const audioChunks = [];
         for await (const chunk of ttsResponse.data) {
-          // Check if this response has been interrupted
-          if (activeResponseGenerations.get(userId) !== responseId) {
-            console.log(`Audio generation ${responseId} was interrupted`);
-            break;
-          }
-          
-          // Convert the chunk to base64
-          const audioBase64 = chunk.toString('base64');
-        
-          // Send the chunk to the client
-          ws.send(JSON.stringify({
-            type: 'audio_chunk',  // Changed type to indicate a chunk
-            audio: audioBase64,
-            format: 'mp3',       // Keep the format to help the client
-            messageId: messageId // Pass through the message ID for timeout handling
-          }));
+          audioChunks.push(chunk);
         }
+        const audioBuffer = Buffer.concat(audioChunks);
+        const audioBase64 = audioBuffer.toString('base64');
+  
+        // Send the complete audio as a single message
+        ws.send(JSON.stringify({
+          type: 'audio_response',
+          audio: audioBase64,
+          format: 'mp3',
+          messageId: messageId,
+          emotion: emotionTag
+        }));
+
+        
       } catch (error) {
         console.error('Error generating audio:', error);
         ws.send(JSON.stringify({
