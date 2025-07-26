@@ -6,15 +6,93 @@ const { returnResponse, verifyrequiredparams } = require('../middleware/common')
 const db = admin.firestore();
 
 /**
+ * @desc    Delete diary entries for a user on a specific date
+ * @route   DELETE /api/diary/deleteByDate/:userId/:date
+ * @access  Private
+ */
+const deleteDiaryEntriesByDate = asyncHandler(async (req, res) => {
+  try {
+    const { userId, date } = req.params;
+    //const userId = req.user ? req.user.id : "test_user_id";
+
+    // Verify required parameters
+    if (!date) {
+      return returnResponse(400, 'Date must be provided for deletion', null, res);
+    }
+
+    // Create a query to find diary entries for the user on the specified date
+    const diaryEntriesRef = db.collection('diaryEntries');
+    const querySnapshot = await diaryEntriesRef
+      .where('userId', '==', userId)
+      .where('date', '==', date)
+      .get();
+
+    // Check if any entries were found
+    if (querySnapshot.empty) {
+      return returnResponse(404, 'No diary entries found for the specified user and date', null, res);
+    }
+
+    // Delete the documents
+    const batch = db.batch();
+    querySnapshot.forEach(doc => {
+      batch.delete(diaryEntriesRef.doc(doc.id));
+    });
+
+    // Commit the batch delete
+    await batch.commit();
+
+    return returnResponse(200, `Successfully deleted ${querySnapshot.size} diary entries for user ${userId} on date ${date}`, null, res);
+  } catch (error) {
+    console.error('Error deleting diary entries by date:', error);
+    throw new Error(error.message || 'Failed to delete diary entries by date');
+  }
+});
+
+/**
+ * @desc    Delete a diary entry
+ * @route   DELETE /api/diary/delete/:entryId
+ * @access  Private
+ */
+const deleteDiaryEntry = asyncHandler(async (req, res) => {
+    try {
+        const { entryId } = req.params;
+        const userId = req.user ? req.user.id : "test_user_id";
+
+        // Get the diary entry document
+        const diaryEntryRef = db.collection('diaryEntries').doc(entryId);
+        const diaryEntryDoc = await diaryEntryRef.get();
+
+        // Check if the entry exists
+        if (!diaryEntryDoc.exists) {
+            return returnResponse(404, 'Diary entry not found', null, res);
+        }
+
+        // Verify the user ID
+        if (diaryEntryDoc.data().userId !== userId) {
+            return returnResponse(403, 'Unauthorized: You are not allowed to delete this diary entry', null, res);
+        }
+
+        // Delete the document
+        await diaryEntryRef.delete();
+
+        return returnResponse(200, 'Diary entry deleted successfully', null, res);
+    } catch (error) {
+        console.error('Error deleting diary entry:', error);
+        throw new Error(error.message || 'Failed to delete diary entry');
+    }
+});
+
+/**
  * @desc    Create a new diary entry
  * @route   POST /api/diary/create
- * @access  Private
+ * @access  Public (Authentication Removed)
  */
 const createDiaryEntry = asyncHandler(async (req, res) => {
   try {
     // Verify required parameters
-    await verifyrequiredparams(400, req.body, ['date', 'title', 'body'], res); // userId is not included here
+    await verifyrequiredparams(400, req.body, ['date', 'title', 'body'], res);
 
+    // Extract userId, using req.user.id if available, otherwise default
     const userId = req.user ? req.user.id : "test_user_id";
     const { date, title, body } = req.body;
 
@@ -50,7 +128,7 @@ const createDiaryEntry = asyncHandler(async (req, res) => {
 /**
  * @desc    Edit an existing diary entry
  * @route   PUT /api/diary/edit/:entryId
- * @access  Private
+ * @access  Public (Authentication Removed)
  */
 const editDiaryEntry = asyncHandler(async (req, res) => {
   try {
@@ -108,7 +186,7 @@ const editDiaryEntry = asyncHandler(async (req, res) => {
 /**
  * @desc    Get all diary entries for a user with optional date filtering
  * @route   GET /api/diary/user/:userId
- * @access  Private
+ * @access  Public (Authentication Removed)
  */
 const getUserDiaryEntries = asyncHandler(async (req, res) => {
   try {
@@ -163,5 +241,7 @@ const getUserDiaryEntries = asyncHandler(async (req, res) => {
 module.exports = {
   createDiaryEntry,
   editDiaryEntry,
-  getUserDiaryEntries
+  getUserDiaryEntries,
+  deleteDiaryEntry,
+  deleteDiaryEntriesByDate
 };
