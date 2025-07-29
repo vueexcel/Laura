@@ -8,12 +8,34 @@ if (!process.env.apiKey) {
 
 const openai = new OpenAI({ apiKey: process.env.apiKey });
 
-async function transcribeAudio(filePath) {
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`File not found: ${filePath}`);
+async function transcribeAudio(audioData, format = 'webm') {
+  // Check if audioData is a file path (string) or a buffer
+  let audio;
+  let tempFilePath = null;
+  
+  try {
+    if (typeof audioData === 'string') {
+      // It's a file path
+      if (!fs.existsSync(audioData)) {
+        throw new Error(`File not found: ${audioData}`);
+      }
+      audio = fs.createReadStream(audioData);
+    } else if (Buffer.isBuffer(audioData)) {
+      // It's a buffer, create a temporary file
+      const os = require('os');
+      const path = require('path');
+      tempFilePath = path.join(os.tmpdir(), `temp-audio-${Date.now()}.${format}`);
+      
+      // Write buffer to temporary file
+      fs.writeFileSync(tempFilePath, audioData);
+      audio = fs.createReadStream(tempFilePath);
+    } else {
+      throw new Error('Invalid audio data: must be a file path or a buffer');
+    }
+  } catch (error) {
+    console.error('Error preparing audio data:', error);
+    throw error;
   }
-
-  const audio = fs.createReadStream(filePath);
 
   try {
     console.log('Making OpenAI API request...');
@@ -24,16 +46,30 @@ async function transcribeAudio(filePath) {
     });
 
     if (!response) {
-      throw new Error('No response received from OpenAI API');
+      console.warn('Empty response received from OpenAI API.');
+      return "user is silence";
     }
 
     console.log('OpenAI API Response:', response);
     return response; // OpenAI SDK returns the text directly when response_format is 'text'
   } catch (error) {
     console.error('OpenAI API Error:', error);
-    throw error;
+    // Return a user-friendly error message, preserving the error details for debugging.
+    return `user is silence. (Details: ${error.message})`;
   } finally {
-    audio.destroy(); // Clean up the stream
+    if (audio) {
+      audio.destroy(); // Clean up the stream
+    }
+    
+    // Delete temporary file if one was created
+    if (tempFilePath && fs.existsSync(tempFilePath)) {
+      try {
+        fs.unlinkSync(tempFilePath);
+        console.log(`Deleted temporary file: ${tempFilePath}`);
+      } catch (err) {
+        console.error(`Error deleting temporary file: ${err.message}`);
+      }
+    }
   }
 }
 

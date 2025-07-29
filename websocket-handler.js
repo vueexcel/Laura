@@ -212,6 +212,45 @@ Always return your response as a valid JSON object with two keys: response (your
       timestamp: new Date(),
       userId: userId
     };
+    
+    // If this is an audio message, add a flag and ensure we're not storing raw audio data
+    if (data.isAudioMessage) {
+      chatEntry.audioSource = true; // Add a flag to indicate this came from audio
+      
+      // Make sure we're not storing raw audio data in the database
+      // We only want to store the transcribed text in the question field
+      if (data.originalAudio) {
+        // Don't store the original audio data in the database
+        console.log('Audio message detected - storing transcribed text only');
+        
+        // Check if the message is actually transcribed text and not raw audio data
+        // If message contains base64 patterns or is too long, it might be raw audio data
+        if (message.length > 1000 || /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(message)) {
+          console.warn('Detected possible raw audio data in message - not saving to chat history');
+          return; // Exit early without saving to chat history
+        }
+      }
+    }
+    
+    // Ensure no JSON data is saved in the chat history
+    if (typeof message === 'string' && (message.trim().startsWith('{') && message.trim().endsWith('}')) || 
+        (message.trim().startsWith('[') && message.trim().endsWith(']'))) {
+      console.warn('Detected possible JSON data in message - not saving raw JSON to chat history');
+      // Try to extract text content if it's a JSON object with a text/message field
+      try {
+        const jsonObj = JSON.parse(message.trim());
+        if (jsonObj.text || jsonObj.message || jsonObj.content) {
+          chatEntry.question = jsonObj.text || jsonObj.message || jsonObj.content;
+          console.log('Extracted text content from JSON object for chat history');
+        } else {
+          console.warn('JSON object does not contain recognizable text field - using placeholder');
+          chatEntry.question = "[Message contained data that couldn't be displayed]";
+        }
+      } catch (e) {
+        console.warn('Failed to parse JSON data - using placeholder');
+        chatEntry.question = "[Message contained data that couldn't be displayed]";
+      }
+    }
 
     // Add to in-memory conversation history
     sessionData.conversationHistory.push(chatEntry);
@@ -323,18 +362,74 @@ async function handleAudioMessage(ws, data, sessionData) {
   }));
 
   try {
-    // Convert base64 audio to buffer
-    const audioBuffer = Buffer.from(audio, 'base64');
+    // Validate audio data
+    if (!audio || typeof audio !== 'string') {
+      console.warn('Invalid audio data: Audio data is missing or not a string');
+      const errorMessage = "I didn't receive valid audio data. Please try recording again.";
+      ws.send(JSON.stringify({
+        type: 'transcription',
+        text: errorMessage
+      }));
+      //STOP
+      ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
+      
+      // Don't process the error message further - just stop here
+      return; // Stop further processing
+    }
+
+    // Check if the audio string looks like JSON (might be a client error sending raw JSON)
+    if (audio.trim().startsWith('{') && audio.trim().endsWith('}')) {
+      console.warn('Received JSON-like string as audio data');
+      const errorMessage = "I received what appears to be JSON data instead of audio. Please try recording again or check your audio settings.";
+      
+      // Send transcription error to client
+      ws.send(JSON.stringify({
+        type: 'transcription',
+        text: errorMessage
+      }));
+      //STOP
+      ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
+      
+      // Don't process the error message further - just stop here
+      return; // Stop processing further
+    }
     
-    // Save audio to temporary file
-    const tempFilePath = path.join(__dirname, 'temp-audio-' + Date.now() + '.' + format);
-    fs.writeFileSync(tempFilePath, audioBuffer);
+    // Try to convert base64 audio to buffer
+    let audioBuffer;
+    try {
+      audioBuffer = Buffer.from(audio, 'base64');
+      
+      // Check if the buffer is too small or empty (likely invalid audio)
+      if (audioBuffer.length < 100) { // Arbitrary small size threshold
+        throw new Error('Audio data too small to be valid');
+      }
+    } catch (bufferError) {
+      console.error('Error converting audio to buffer:', bufferError);
+      const errorMessage = "The audio data appears to be corrupted. Please try recording again.";
+      ws.send(JSON.stringify({
+        type: 'transcription',
+        text: errorMessage
+      }));
+      //STOP
+      ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
+      
+      // Don't process the error message further - just stop here
+      return; // Stop processing further
+    }
     
-    // Transcribe audio
-    const transcribedText = await transcribeAudio(tempFilePath);
+    // Transcribe audio directly from buffer without saving to a temporary file
+    const transcribedText = await transcribeAudio(audioBuffer, format);
     
-    // Delete temporary file
-    fs.unlinkSync(tempFilePath);
+    // Check if transcription failed (and transcribeAudio returned an error message)
+    if (transcribedText.includes("I couldn't detect any clear speech") || transcribedText.includes("I had trouble processing your audio") || transcribedText.includes("user is silence")) {
+      console.warn(`Transcription failed for user ${userId}: ${transcribedText}`);
+      ws.send(JSON.stringify({ type: 'transcription', text: transcribedText })); // Send error to client
+      //STOP
+      ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
+      
+      // Don't process the error message further - just stop here
+      return; // Stop processing
+    }
     
     // Send transcription to client
     ws.send(JSON.stringify({
@@ -343,30 +438,55 @@ async function handleAudioMessage(ws, data, sessionData) {
     }));
     
     // Process the transcribed text as a user message (preserving responseMode and mode)
-    await handleUserMessage(ws, { 
-      userId, 
-      message: transcribedText, 
-      messageId,
-      responseMode: data.responseMode || sessionData.responseMode,
-      mode: data.mode || sessionData.mode
-    }, sessionData);
-    
+    //NEW IF STOP
+    if (transcribedText) {
+        // Check if transcription was successful (not an error message)
+        const isTranscriptionError = transcribedText.includes("I couldn't detect any clear speech") || 
+                                   transcribedText.includes("I had trouble processing your audio") ||
+                                   transcribedText.includes("user is silence");
+        
+        await handleUserMessage(ws, { 
+            userId, 
+            message: transcribedText, 
+            messageId,
+            responseMode: data.responseMode || sessionData.responseMode,
+            mode: data.mode || sessionData.mode,
+            isAudioMessage: true,
+            // Always set originalAudio to null to prevent storing raw audio data
+            originalAudio: null
+        }, sessionData);
+    }
   } catch (error) {
     console.error('Error processing audio message:', error);
+    
+    // Create a user-friendly error message
+    const errorMessage = error.message.includes('Invalid base64') || error.message.includes('too small') ?
+      "I couldn't process your audio recording. It may be corrupted or empty. Please try recording again or type your message instead." :
+      "I had trouble processing your audio. Could you please try speaking more clearly or typing your message instead.";
+    
+    // Send error to client
     ws.send(JSON.stringify({
       type: 'error',
-      message: 'Error processing audio message'
+      message: errorMessage
     }));
-    
-    // Reset thinking status
+    //STOP
+      ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
+
+    // Also send as transcription so it appears in the chat
     ws.send(JSON.stringify({
-      type: 'thinking_status',
-      isThinking: false
+      type: 'transcription',
+      text: errorMessage
     }));
-  }
+
+       // Don't process the error message further - just stop here
+       // No need to call handleUserMessage for error cases
+    }
 }
 
-// Periodically sync in-memory sessions to Firestore (unchanged)
+// Periodic syncing of in-memory sessions to Firestore has been disabled as requested
+// This code was previously responsible for syncing sessions and updating chat summaries
+// It has been commented out to prevent the generation of unnecessary chat summaries
+/*
 setInterval(async () => {
   console.log('Syncing in-memory sessions to Firestore...');
   for (const [userId, sessionData] of userSessions.entries()) {
@@ -393,6 +513,7 @@ setInterval(async () => {
     }
   }
 }, 5 * 60 * 1000);
+*/
 
 // Export function (unchanged)
 module.exports = function(wss) {

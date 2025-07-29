@@ -323,7 +323,7 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
         const chatEntryWithTimestamp = {
           ...newChatEntry,
           timestamp: admin.firestore.FieldValue.serverTimestamp(),
-          user_id: userId
+          userId: userId
         };
         
         // Save the chat entry to the chatHistory collection
@@ -366,7 +366,7 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
           
           // Create a new user document if it doesn't exist
           await userRef.set({
-            user_id: userId,
+            userId: userId,
             chatIds: [chatEntryId],
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -426,58 +426,27 @@ async function getChatHistoryForUser(userId, limit = 10) {
   try {
     console.log(`Retrieving chat history for user ${userId} with limit ${limit}`);
     
-    // Get the user document to retrieve the chatIds array
-    const userRef = db.collection('users').doc(userId);
-    const userDoc = await userRef.get();
+    // Query the chatHistory collection directly for entries matching the userId
+    const chatHistoryRef = db.collection('chatHistory');
+    const query = chatHistoryRef.where('userId', '==', userId)
+                              .orderBy('timestamp', 'desc')
+                              .limit(limit);
     
-    if (!userDoc.exists || !userDoc.data().chatIds || userDoc.data().chatIds.length === 0) {
-      console.log(`No chat IDs found for user ${userId}`);
+    const chatSnapshot = await query.get();
+    
+    if (chatSnapshot.empty) {
+      console.log(`No chat history found for user ${userId}`);
       return [];
     }
     
-    const chatIds = userDoc.data().chatIds;
-    console.log(`Found ${chatIds.length} chat IDs for user ${userId}`);
-    
-    // Get all chat documents from the chatHistory collection
+    // Convert the query snapshot to an array of chat entries
     const chatEntries = [];
-    
-    // Use Promise.all to fetch all chat documents in parallel
-    const chatPromises = chatIds.map(async (chatId) => {
-      const chatDoc = await db.collection('chatHistory').doc(chatId).get();
-      if (chatDoc.exists) {
-        return chatDoc.data();
-      }
-      return null;
+    chatSnapshot.forEach(doc => {
+      chatEntries.push(doc.data());
     });
     
-    const chatResults = await Promise.all(chatPromises);
-    const validChatEntries = chatResults.filter(entry => entry !== null);
-    
-    console.log(`Retrieved ${validChatEntries.length} valid chat entries`);
-    
-    // Filter chat entries from the last month to the most recent
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-    
-    const filteredChat = validChatEntries.filter(entry => {
-      const entryDate = new Date(entry.timestamp.toDate ? entry.timestamp.toDate() : entry.timestamp);
-      return entryDate >= oneMonthAgo;
-    });
-    
-    console.log(`Filtered to ${filteredChat.length} chat entries from the last month`);
-    
-    // Sort the chat entries by timestamp (newest first)
-    filteredChat.sort((a, b) => {
-      const dateA = new Date(a.timestamp.toDate ? a.timestamp.toDate() : a.timestamp);
-      const dateB = new Date(b.timestamp.toDate ? b.timestamp.toDate() : b.timestamp);
-      return dateB - dateA; // Descending order (newest first)
-    });
-    
-    // If limit is provided, return the most recent entries up to the limit
-    // Otherwise, return all filtered chat entries from the last month
-    const result = limit > 0 ? filteredChat.slice(0, limit) : filteredChat;
-    console.log(`Returning ${result.length} chat entries`);
-    return result;
+    console.log(`Retrieved ${chatEntries.length} chat entries for user ${userId}`);
+    return chatEntries;
   } catch (error) {
     console.error('Error retrieving chat history:', error);
     throw new Error('Failed to retrieve chat history: ' + error.message);
@@ -491,35 +460,28 @@ async function getChatHistoryForUser(userId, limit = 10) {
  */
 async function clearChatHistoryForUser(userId) {
   try {
-    // Get the user document to retrieve the chatIds array
-    const userRef = db.collection('users').doc(userId);
-    const userDoc = await userRef.get();
+    // Query the chatHistory collection for entries matching the userId
+    const chatHistoryRef = db.collection('chatHistory');
+    const query = chatHistoryRef.where('userId', '==', userId);
+    const chatSnapshot = await query.get();
     
-    if (!userDoc.exists || !userDoc.data().chatIds || userDoc.data().chatIds.length === 0) {
-      console.log(`No chat IDs found for user ${userId}`);
+    if (chatSnapshot.empty) {
+      console.log(`No chat history found for user ${userId}`);
       return false;
     }
     
-    const chatIds = userDoc.data().chatIds;
-    console.log(`Found ${chatIds.length} chat IDs to delete for user ${userId}`);
+    console.log(`Found ${chatSnapshot.size} chat entries to delete for user ${userId}`);
     
     // Delete all chat documents from the chatHistory collection
     const batch = db.batch();
     
-    for (const chatId of chatIds) {
-      const chatRef = db.collection('chatHistory').doc(chatId);
-      batch.delete(chatRef);
-    }
+    chatSnapshot.forEach(doc => {
+      batch.delete(doc.ref);
+    });
     
     // Execute the batch delete
     await batch.commit();
-    console.log(`Deleted ${chatIds.length} chat documents from chatHistory collection`);
-    
-    // Clear the chatIds array in the user document
-    await userRef.update({
-      chatIds: [],
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
+    console.log(`Deleted ${chatSnapshot.size} chat documents from chatHistory collection`);
     
     // Also clear the chat summary
     const chatSummaryRef = db.collection('chatSummary').doc(userId);
@@ -694,16 +656,7 @@ async function semanticSearch(userId, query, limit = 5) {
   try {
     console.log('Semantic search with embeddings temporarily disabled');
     
-    // Get the user document to retrieve their chat IDs
-    const userRef = db.collection('users').doc(userId);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists || !userDoc.data().chatIds || userDoc.data().chatIds.length === 0) {
-      console.log(`No chat entries found for user ${userId}`);
-      return [];
-    }
-    
-    // Query all chat entries from the chatHistory collection for this user
+    // Query all chat entries directly from the chatHistory collection for this user
     const chatHistoryRef = db.collection('chatHistory');
     const chatSnapshot = await chatHistoryRef.where('userId', '==', userId).get();
     
@@ -836,34 +789,21 @@ async function tagChatEntryAsMoment(userId, chatId, momentData) {
  */
 async function getMomentsForUser(userId, label = null) {
   try {
-    // Get the user document to retrieve their chat IDs
-    const userRef = db.collection('users').doc(userId);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists || !userDoc.data().chatIds || userDoc.data().chatIds.length === 0) {
-      console.log(`No chat entries found for user ${userId}`);
-      return [];
-    }
-    
-    // Get all chat entries for the user
-    const chatIds = userDoc.data().chatIds;
-    const chatEntries = [];
-    
-    // Query all chat entries from the chatHistory collection
+    // Query all chat entries from the chatHistory collection directly
     const chatHistoryRef = db.collection('chatHistory');
-    const chatSnapshot = await chatHistoryRef.where('userId', '==', userId).get();
+    const chatSnapshot = await chatHistoryRef.where('userId', '==', userId)
+                                          .where('momentData.moment', '==', true)
+                                          .get();
     
     if (chatSnapshot.empty) {
-      console.log(`No chat entries found for user ${userId} in chatHistory collection`);
+      console.log(`No moment entries found for user ${userId} in chatHistory collection`);
       return [];
     }
     
     // Process each chat entry
+    const chatEntries = [];
     chatSnapshot.forEach(doc => {
-      const chatEntry = doc.data();
-      if (chatEntry.momentData && chatEntry.momentData.moment === true) {
-        chatEntries.push(chatEntry);
-      }
+      chatEntries.push(doc.data());
     });
     
     // Filter moments by label if provided
@@ -894,21 +834,14 @@ async function getMomentsForUser(userId, label = null) {
  */
 async function migrateMomentsToNewFormat(userId) {
   try {
-    // Get the user document to retrieve their chat IDs
-    const userRef = db.collection('users').doc(userId);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists || !userDoc.data().chatIds || userDoc.data().chatIds.length === 0) {
-      console.log(`No chat entries found for user ${userId}`);
-      return 0;
-    }
-    
     // Query all chat entries from the chatHistory collection for this user
     const chatHistoryRef = db.collection('chatHistory');
-    const chatSnapshot = await chatHistoryRef.where('userId', '==', userId).get();
+    const chatSnapshot = await chatHistoryRef.where('user_id', '==', userId)
+                                          .where('moment', '==', true)
+                                          .get();
     
     if (chatSnapshot.empty) {
-      console.log(`No chat entries found for user ${userId} in chatHistory collection`);
+      console.log(`No moments found for user ${userId} in chatHistory collection`);
       return 0;
     }
     
@@ -1063,7 +996,7 @@ async function updateUserBehaviorTracking(userId, currentOpenTime = new Date()) 
     } else {
       // If document doesn't exist, create it with initial tracking data
       await userRef.set({
-        user_id: userId,
+        userId: userId,
         chatIds: [],
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),

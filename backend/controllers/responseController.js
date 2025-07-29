@@ -257,9 +257,9 @@ Always return your response as a valid JSON object with two keys: response (your
 
 
 const getChatHistory = asyncHandler(async (req, res) => {
-    // Get userId from authenticated user or use a test ID
-    // In production, this should come from req.user.id after authentication
-    const userId = req.user ? req.user.id : "test_user_id";
+    // Get userId from route params, authenticated user, or use a test ID
+    // Priority: 1. Route params, 2. Authenticated user, 3. Default test ID
+    let userId = req.params.userId || (req.user ? req.user.id : "test_user_id");
 
     try {
         // Get limit from query params or default to 10

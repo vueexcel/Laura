@@ -26,6 +26,7 @@ const upload = multer({
 
 router.post('/generate', upload.single('audio'), generateAIResponse);
 router.get('/history', getChatHistory);
+router.get('/history/user/:userId', getChatHistory);
 router.get('/history/:id', getChatEntryDetail);
 router.delete('/history', clearChatHistory);
 
