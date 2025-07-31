@@ -322,7 +322,20 @@
                 startContinuousListening();
             };
             
+            // Track if we're expecting binary data in the next message
+            let expectingBinaryChunk = false;
+            let currentChunkMessageId = null;
+            
             socket.onmessage = (event) => {
+                // Check if this is a binary message
+                if (expectingBinaryChunk && event.data instanceof Blob) {
+                    // Handle binary audio chunk
+                    handleBinaryAudioChunk(event.data);
+                    expectingBinaryChunk = false;
+                    return;
+                }
+                
+                // Parse JSON message
                 const data = JSON.parse(event.data);
                 console.log('Received message:', data.type);
                 
@@ -343,15 +356,28 @@
                         // Append text chunk to the last assistant message
                         appendToLastAssistantMessage(data.text);
                         break;
+                    
+                    case 'audio_chunk_header':
+                        // Set flag to expect binary data in the next message
+                        expectingBinaryChunk = true;
+                        currentChunkMessageId = data.messageId;
+                        
+                        // Log first chunk arrival for latency monitoring
+                        if (data.chunkNumber === 1) {
+                            console.log(`First audio chunk arriving - messageId: ${data.messageId}`);
+                        }
+                        break;
                         
                     case 'audio_chunk':
-                        // Handle audio chunk for real-time playback
+                        // Handle legacy audio chunk for real-time playback (base64 encoded)
                         handleAudioChunk(data.audio, data.format);
                         break;
                         
                     case 'audio_complete':
                         // Audio stream is complete
                         console.log('Audio playback complete');
+                        // Enable play button for the complete audio
+                        playAudioButton.disabled = false;
                         break;
                         
                     case 'thinking_status':
@@ -367,6 +393,12 @@
                         const emotionText = data.emotion ? `Laura is feeling: ${data.emotion}` : '';
                         addStatusMessage(emotionText);
                         console.log('Emotion detected:', data.emotion);
+                        break;
+                        
+                    case 'filler_audio':
+                        // Handle filler audio that plays while waiting for the full response
+                        console.log('Received filler audio:', data.fillerName);
+                        playAudioFromBase64(data.audio, data.format);
                         break;
                         
                     case 'error':
@@ -482,7 +514,33 @@
             }
         }
         
-        // Handle audio chunks for real-time playback
+        // Handle binary audio chunks received directly from WebSocket
+        function handleBinaryAudioChunk(blob) {
+            // Convert Blob to ArrayBuffer
+            blob.arrayBuffer().then(arrayBuffer => {
+                const byteArray = new Uint8Array(arrayBuffer);
+                
+                // Add to audio queue
+                audioQueue.push(byteArray);
+                
+                // Process queue if possible - immediate processing for lowest latency
+                if (isAudioInitialized && !sourceBuffer.updating) {
+                    processAudioQueue();
+                }
+                
+                // Start playing if not already playing
+                // This ensures audio playback starts as soon as the first chunk arrives
+                if (audioPlayer.paused) {
+                    audioPlayer.play()
+                        .then(() => console.log('Audio playback started'))
+                        .catch(e => console.error('Error starting audio playback:', e));
+                }
+            }).catch(error => {
+                console.error('Error processing binary audio chunk:', error);
+            });
+        }
+        
+        // Handle base64 encoded audio chunks (legacy support)
         function handleAudioChunk(audioBase64, format) {
             // Convert base64 to ArrayBuffer
             const byteCharacters = atob(audioBase64);
@@ -500,21 +558,45 @@
                 processAudioQueue();
             }
             
-            // Enable play button
-            playAudioButton.disabled = false;
+            // Start playing if not already playing
+            if (audioPlayer.paused) {
+                audioPlayer.play().catch(e => console.error('Error starting audio playback:', e));
+            }
         }
         
-        // Process audio queue
+        // Process audio queue - optimized for lowest latency
         function processAudioQueue() {
             if (audioQueue.length > 0 && !sourceBuffer.updating) {
                 const chunk = audioQueue.shift();
                 try {
+                    // Append the buffer immediately
                     sourceBuffer.appendBuffer(chunk);
-                    if (!audioPlayer.paused) {
-                        audioPlayer.play().catch(e => console.error('Error playing audio:', e));
+                    
+                    // Ensure audio is playing
+                    if (audioPlayer.paused) {
+                        audioPlayer.play()
+                            .then(() => {
+                                // Set low latency mode if supported
+                                if ('lowLatency' in audioPlayer) {
+                                    audioPlayer.lowLatency = true;
+                                }
+                            })
+                            .catch(e => console.error('Error playing audio:', e));
+                    }
+                    
+                    // Process next chunk immediately if available
+                    if (audioQueue.length > 0) {
+                        sourceBuffer.addEventListener('updateend', function onUpdateEnd() {
+                            sourceBuffer.removeEventListener('updateend', onUpdateEnd);
+                            processAudioQueue();
+                        });
                     }
                 } catch (e) {
                     console.error('Error appending buffer:', e);
+                    // If there was an error with this chunk, try the next one
+                    if (audioQueue.length > 0) {
+                        setTimeout(processAudioQueue, 0);
+                    }
                 }
             }
         }
@@ -749,16 +831,61 @@
                         // Generate a unique message ID
                         const messageId = Date.now().toString();
                         
-                        // Send audio to server
-                        socket.send(JSON.stringify({
-                            type: 'audio_message',
-                            userId: 'test_user_id',
-                            audio: base64Audio,
-                            format: 'webm',
-                            messageId: messageId
-                        }));
-                        
-                        addStatusMessage('Audio sent, transcribing...');
+                        // Check if audio data is too large (WebSocket messages have size limits)
+                        if (base64Audio.length > 100000) {
+                            addStatusMessage('Audio file is large, compressing...');
+                            
+                            // Create a new, lower quality MediaRecorder to compress the audio
+                            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                            const audioSource = audioContext.createMediaElementSource(new Audio(URL.createObjectURL(audioBlob)));
+                            const destination = audioContext.createMediaStreamDestination();
+                            audioSource.connect(destination);
+                            
+                            const compressedRecorder = new MediaRecorder(destination.stream, {
+                                mimeType: 'audio/webm;codecs=opus',
+                                audioBitsPerSecond: 32000 // Lower bitrate for smaller file size
+                            });
+                            
+                            const compressedChunks = [];
+                            compressedRecorder.ondataavailable = e => compressedChunks.push(e.data);
+                            compressedRecorder.onstop = () => {
+                                const compressedBlob = new Blob(compressedChunks, { type: 'audio/webm' });
+                                const compressedReader = new FileReader();
+                                compressedReader.readAsDataURL(compressedBlob);
+                                compressedReader.onloadend = () => {
+                                    const compressedBase64 = compressedReader.result.split(',')[1];
+                                    
+                                    // Send compressed audio
+                                    socket.send(JSON.stringify({
+                                        type: 'audio_message',
+                                        userId: 'test_user_id',
+                                        audio: compressedBase64,
+                                        format: 'webm',
+                                        messageId: messageId,
+                                        compressed: true
+                                    }));
+                                    
+                                    addStatusMessage('Compressed audio sent, transcribing...');
+                                    audioContext.close();
+                                };
+                            };
+                            
+                            // Start recording the compressed audio
+                            audioSource.mediaElement.play();
+                            compressedRecorder.start();
+                            audioSource.mediaElement.onended = () => compressedRecorder.stop();
+                        } else {
+                            // Send audio to server (original quality)
+                            socket.send(JSON.stringify({
+                                type: 'audio_message',
+                                userId: 'test_user_id',
+                                audio: base64Audio,
+                                format: 'webm',
+                                messageId: messageId
+                            }));
+                            
+                            addStatusMessage('Audio sent, transcribing...');
+                        }
                     };
                 };
                 
@@ -808,8 +935,37 @@
         
         function playLastAudio() {
             if (lastAudioUrl) {
+                // If we have a stored audio URL from a filler audio or previous complete response
                 audioPlayer.src = lastAudioUrl;
-                audioPlayer.play();
+                audioPlayer.play().catch(e => console.error('Error replaying audio:', e));
+            } else if (mediaSource && mediaSource.readyState === 'open') {
+                // For streamed audio, just replay from the beginning
+                audioPlayer.currentTime = 0;
+                audioPlayer.play().catch(e => console.error('Error replaying streamed audio:', e));
+            }
+        }
+        
+        // Play audio from base64 string
+        function playAudioFromBase64(base64Audio, format) {
+            try {
+                // Convert base64 to blob
+                const byteCharacters = atob(base64Audio);
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                const blob = new Blob([byteArray], { type: `audio/${format}` });
+                
+                // Create object URL and play
+                const audioUrl = URL.createObjectURL(blob);
+                audioPlayer.src = audioUrl;
+                audioPlayer.play().catch(e => console.error('Error playing filler audio:', e));
+                
+                // Store as last audio URL
+                lastAudioUrl = audioUrl;
+            } catch (error) {
+                console.error('Error playing audio from base64:', error);
             }
         }
     </script>

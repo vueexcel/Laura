@@ -4,12 +4,16 @@ const fs = require('fs');
 const { transcribeAudio } = require('./backend/helpers/transcriptionHelper');
 const { textToSpeech, getVoiceIdFromEmotionTag } = require('./backend/helpers/audioHelper');
 const { updateUserBehaviorTracking, getChatHistoryForUser, generateChatSummary } = require('./backend/helpers/firestoreHelper');
+const { getFillerAudio, ensureFillerFilesExist } = require('./backend/helpers/fillerAudioHelper');
 const admin = require('firebase-admin');
 const { OpenAI } = require('openai');
 
+// Ensure filler audio files exist
+ensureFillerFilesExist();
+
 // Initialize OpenAI
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || process.env.apiKey
+  apiKey: process.env.apiKey // Use the apiKey from .env file directly
 });
 
 // In-memory session state management
@@ -17,7 +21,8 @@ const userSessions = new Map();
 
 // Variable to track active response generation for interruption handling
 let activeResponseGenerations = new Map();
-
+// Generate unique ID for chat entry
+const chatId = Date.now().toString();
 // Handle user text messages
 async function handleUserMessage(ws, data, sessionData) {
       const { userId, message, messageId, responseMode, mode } = data;
@@ -118,13 +123,40 @@ Always return your response as a valid JSON object with two keys: response (your
 
     const fullResponse = completion.choices[0].message.content;
     
+    // Log the response time for monitoring latency
+    console.log(`OpenAI response received in ${Date.now() - responseId}ms for user ${userId}`);
+    
     // Parse the JSON response
     let responseData;
     try {
+      // Check if the response is already valid JSON
       responseData = JSON.parse(fullResponse);
     } catch (parseError) {
       console.error('Failed to parse OpenAI JSON response:', parseError);
-      throw new Error('Invalid JSON response from OpenAI');
+      console.log('Raw response from OpenAI:', fullResponse);
+      
+      // Attempt to extract a valid JSON object if the response contains one
+      const jsonMatch = fullResponse.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          responseData = JSON.parse(jsonMatch[0]);
+          console.log('Successfully extracted JSON from response');
+        } catch (extractError) {
+          console.error('Failed to extract JSON from response:', extractError);
+          // Create a fallback response
+          responseData = {
+            response: "I'm having trouble processing your request right now. Could you try again?",
+            emotion_tag: "neutral"
+          };
+        }
+      } else {
+        // If no JSON-like structure is found, create a fallback response
+        responseData = {
+          response: fullResponse.replace(/\[.*?\]/g, '').trim(), // Remove any emotion tags
+          emotion_tag: "neutral"
+        };
+        console.log('Created fallback response from text');
+      }
     }
 
     // Extract clean data directly from JSON
@@ -140,57 +172,143 @@ Always return your response as a valid JSON object with two keys: response (your
       emotion: emotionTag
     }));
     
-    // Send text response in chunks for real-time display if responseMode is 'text' or 'both'
+    // Send filler audio immediately after emotion detection if audio response is enabled
+    if (sessionData.responseMode === 'audio' || sessionData.responseMode === 'both') {
+      try {
+        // Get appropriate filler audio based on emotion and response length
+        const fillerAudio = await getFillerAudio(emotionTag, cleanResponse.length);
+        
+        if (fillerAudio) {
+          // Send filler audio to client
+          ws.send(JSON.stringify({
+            type: 'filler_audio',
+            audio: fillerAudio.audio,
+            format: fillerAudio.format,
+            messageId: messageId,
+            fillerName: fillerAudio.fillerName
+          }));
+          
+          console.log(`Sent filler audio (${fillerAudio.fillerName}) for emotion: ${emotionTag}`);
+        }
+      } catch (error) {
+        console.error('Error sending filler audio:', error);
+        // Continue with normal response even if filler fails
+      }
+    }
+    
+    // Start audio generation in parallel (if needed) before text streaming
+    let audioPromise = null;
+    let startTime = null; // Declare startTime at a higher scope
+    
+    if (sessionData.responseMode === 'audio' || sessionData.responseMode === 'both') {
+      const voiceId = getVoiceIdFromEmotionTag(emotionTag);
+      // Submit the entire assistant response to ElevenLabs in one API call
+      // This reduces latency by avoiding multiple API calls
+      console.log(`Submitting entire response to ElevenLabs for user ${userId}`);
+      startTime = Date.now(); // Assign value to the variable declared above
+      
+      // Start the TTS request but don't await it yet - we'll process it in parallel with text streaming
+      audioPromise = textToSpeech(cleanResponse, voiceId).catch(error => {
+        console.error('Error initiating audio generation:', error);
+        ws.send(JSON.stringify({
+          type: 'error',
+          message: 'Error generating audio response'
+        }));
+        return null; // Return null to indicate error
+      });
+      console.log(`Started audio generation in parallel for user ${userId}`);
+    }
+
+    // Immediately start text streaming (don't wait for audio)
     if (sessionData.responseMode === 'text' || sessionData.responseMode === 'both') {
       const chunkSize = 10; // Number of characters per chunk
-      for (let i = 0; i < cleanResponse.length; i += chunkSize) {
-        // Check if this response has been interrupted
-        if (activeResponseGenerations.get(userId) !== responseId) {
-          console.log(`Response generation ${responseId} was interrupted`);
-          break;
+      const streamTextPromise = (async () => {
+        for (let i = 0; i < cleanResponse.length; i += chunkSize) {
+          // Check if this response has been interrupted
+          if (activeResponseGenerations.get(userId) !== responseId) {
+            console.log(`Response generation ${responseId} was interrupted`);
+            break;
+          }
+          
+          const textChunk = cleanResponse.substring(i, i + chunkSize);
+          ws.send(JSON.stringify({
+            type: 'text_chunk',
+            text: textChunk,
+            messageId: messageId // Pass through the message ID for timeout handling
+          }));
+          
+          // Small delay between chunks to simulate typing
+          await new Promise(resolve => setTimeout(resolve, 50));
         }
-        
-        const textChunk = cleanResponse.substring(i, i + chunkSize);
-        ws.send(JSON.stringify({
-          type: 'text_chunk',
-          text: textChunk,
-          messageId: messageId // Pass through the message ID for timeout handling
-        }));
-        
-        // Small delay between chunks to simulate typing
-        await new Promise(resolve => setTimeout(resolve, 50));
-      }
+        console.log(`Completed text streaming for user ${userId}`);
+      })();
+      
+      // Don't await the text streaming - let it run in parallel with audio processing
     } else {
       console.log(`Skipping text response for user ${userId} (responseMode: ${sessionData.responseMode})`);
     }
 
-    // Get voice ID and generate audio if responseMode is 'audio' or 'both'
-    if (sessionData.responseMode === 'audio' || sessionData.responseMode === 'both') {
-      const voiceId = getVoiceIdFromEmotionTag(emotionTag);
-      
+    // Process audio stream in parallel with text streaming
+    if (audioPromise) {
       try {
-        const ttsResponse = await textToSpeech(cleanResponse, voiceId);
-      
-        // Capture the audio chunks and convert to base64
-        const audioChunks = [];
-        for await (const chunk of ttsResponse.data) {
-          audioChunks.push(chunk);
+        const ttsResponse = await audioPromise;
+        if (ttsResponse) {
+          const audioStartTime = Date.now();
+          console.log(`Audio stream from ElevenLabs received in ${audioStartTime - startTime}ms for user ${userId}`);
+          
+          // Stream the audio directly from ElevenLabs to the client as binary data
+          // This avoids base64 conversion overhead and is more efficient
+          let chunkCount = 0;
+          let totalBytes = 0;
+          
+          ttsResponse.data.on('data', (chunk) => {
+            chunkCount++;
+            totalBytes += chunk.length;
+            
+            // First send a small JSON message to notify the client about the incoming binary chunk
+            ws.send(JSON.stringify({
+              type: 'audio_chunk_header',
+              chunkSize: chunk.length,
+              format: 'mp3',
+              messageId: messageId,
+              emotion: emotionTag,
+              chunkNumber: chunkCount
+            }));
+            
+            // Then send the actual binary chunk directly without base64 conversion
+            // This enables immediate playback as soon as chunks arrive
+            ws.send(chunk);
+          });
+          
+          ttsResponse.data.on('end', () => {
+            // Signal that audio streaming is complete
+            ws.send(JSON.stringify({
+              type: 'audio_complete',
+              messageId: messageId
+            }));
+            console.log(`Completed audio streaming for user ${userId}`);
+            console.log(`Streamed ${chunkCount} audio chunks (${totalBytes} bytes) in ${Date.now() - audioStartTime}ms`);
+            
+            // Now that audio streaming is complete, send the response_complete message
+            ws.send(JSON.stringify({
+              type: 'response_complete',
+              messageId: messageId || chatId, // Use the original messageId if available
+              emotion: emotionTag,
+              responseMode: sessionData.responseMode, // Include the response mode used
+              mode: sessionData.mode // Include the conversation mode used
+            }));
+          });
+          
+          ttsResponse.data.on('error', (err) => {
+            console.error('Error in audio stream:', err);
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: 'Error in audio stream'
+            }));
+          });
         }
-        const audioBuffer = Buffer.concat(audioChunks);
-        const audioBase64 = audioBuffer.toString('base64');
-  
-        // Send the complete audio as a single message
-        ws.send(JSON.stringify({
-          type: 'audio_response',
-          audio: audioBase64,
-          format: 'mp3',
-          messageId: messageId,
-          emotion: emotionTag
-        }));
-
-        
       } catch (error) {
-        console.error('Error generating audio:', error);
+        console.error('Error processing audio stream:', error);
         ws.send(JSON.stringify({
           type: 'error',
           message: 'Error generating audio response'
@@ -198,10 +316,18 @@ Always return your response as a valid JSON object with two keys: response (your
       }
     } else {
       console.log(`Skipping audio response for user ${userId} (responseMode: ${sessionData.responseMode})`);
+      
+      // If no audio response, send response_complete immediately
+      ws.send(JSON.stringify({
+        type: 'response_complete',
+        messageId: messageId || chatId, // Use the original messageId if available
+        emotion: emotionTag,
+        responseMode: sessionData.responseMode,
+        mode: sessionData.mode
+      }));
     }
 
-    // Generate unique ID for chat entry
-    const chatId = Date.now().toString();
+
 
     // Store conversation entry
     const chatEntry = {
@@ -211,6 +337,7 @@ Always return your response as a valid JSON object with two keys: response (your
       emotionTag: emotionTag,
       timestamp: new Date(),
       userId: userId
+      // Removed duplicate user_id field
     };
     
     // If this is an audio message, add a flag and ensure we're not storing raw audio data
@@ -322,14 +449,17 @@ Always return your response as a valid JSON object with two keys: response (your
       }
     })();
 
-    // Send completion message
-    ws.send(JSON.stringify({
-      type: 'response_complete',
-      messageId: messageId || chatId, // Use the original messageId if available
-      emotion: emotionTag,
-      responseMode: sessionData.responseMode, // Include the response mode used
-      mode: sessionData.mode // Include the conversation mode used
-    }));
+    // Only send completion message immediately if there's no audio response
+    // For audio responses, the completion message will be sent after audio streaming is complete
+    if (!audioPromise) {
+      ws.send(JSON.stringify({
+        type: 'response_complete',
+        messageId: messageId || chatId, // Use the original messageId if available
+        emotion: emotionTag,
+        responseMode: sessionData.responseMode, // Include the response mode used
+        mode: sessionData.mode // Include the conversation mode used
+      }));
+    }
     
     // Clear the active response generation
     if (activeResponseGenerations.get(userId) === responseId) {
@@ -397,15 +527,26 @@ async function handleAudioMessage(ws, data, sessionData) {
     // Try to convert base64 audio to buffer
     let audioBuffer;
     try {
-      audioBuffer = Buffer.from(audio, 'base64');
+      // Check if the audio string is complete (not truncated)
+      if (audio.length % 4 !== 0) {
+        console.warn('Audio data appears to be truncated or incomplete');
+        throw new Error('Audio data is incomplete or truncated');
+      }
+      
+      // Try to clean the base64 string if it contains invalid characters
+      const cleanedAudio = audio.replace(/[^A-Za-z0-9+/=]/g, '');
+      
+      audioBuffer = Buffer.from(cleanedAudio, 'base64');
       
       // Check if the buffer is too small or empty (likely invalid audio)
       if (audioBuffer.length < 100) { // Arbitrary small size threshold
         throw new Error('Audio data too small to be valid');
       }
+      
+      console.log(`Successfully converted audio to buffer of size: ${audioBuffer.length} bytes`);
     } catch (bufferError) {
       console.error('Error converting audio to buffer:', bufferError);
-      const errorMessage = "The audio data appears to be corrupted. Please try recording again.";
+      const errorMessage = "The audio data appears to be corrupted or incomplete. Please try recording again.";
       ws.send(JSON.stringify({
         type: 'transcription',
         text: errorMessage
@@ -539,8 +680,13 @@ module.exports = function(wss) {
       userId
     }));
 
+    // Add this at the top of the file with other variables
+    
+    // Modify the ws.on('message') handler
     ws.on('message', async (message) => {
       try {
+        
+        // Handle JSON messages as before
         let data;
         try {
           data = JSON.parse(message);
@@ -565,7 +711,7 @@ module.exports = function(wss) {
         }
 
         sessionData.lastActivity = Date.now();
-
+        
         // Extract responseMode if present and update session data
         if (data.responseMode) {
           // Validate responseMode value
@@ -589,6 +735,11 @@ module.exports = function(wss) {
         }
         
         switch (data.type) {
+          case 'audio_message_metadata':
+            // Store metadata for the upcoming binary audio data
+            pendingAudioMessages.set(userId, data);
+            break;
+            
           case 'message':
             // For messages sent with {type: 'message', text: '...'} format
             if (data.text !== undefined) {
@@ -611,6 +762,7 @@ module.exports = function(wss) {
             break;
 
           case 'audio_message':
+            // Legacy support for base64 encoded audio
             await handleAudioMessage(ws, data, sessionData);
             break;
 
