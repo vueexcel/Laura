@@ -25,7 +25,7 @@ let activeResponseGenerations = new Map();
 const chatId = Date.now().toString();
 // Handle user text messages
 async function handleUserMessage(ws, data, sessionData) {
-      const { userId, message, messageId, responseMode, mode } = data;
+      const { userId, message, responseMode, mode } = data;
   
   // Store response mode in session data (default to 'both' if not specified)
   sessionData.responseMode = responseMode || sessionData.responseMode || 'both';
@@ -33,11 +33,11 @@ async function handleUserMessage(ws, data, sessionData) {
   // Store conversation mode in session data (default to 'neutral' if not specified)
   sessionData.mode = mode || sessionData.mode || 'neutral';
   
-  // Send thinking status
-  ws.send(JSON.stringify({
-    type: 'thinking_status',
-    isThinking: true
-  }));
+  // Send thinking status message
+     ws.send(JSON.stringify({
+       type: 'thinking_status',
+       isThinking: true
+     }));
 
   try {
     // Fetch chat summary from Firestore
@@ -103,11 +103,11 @@ Always return your response as a valid JSON object with two keys: response (your
       });
     }
 
-    // Send thinking status update
-    ws.send(JSON.stringify({
-      type: 'thinking_status',
-      isThinking: false
-    }));
+    // Send thinking complete status
+     ws.send(JSON.stringify({
+       type: 'thinking_status',
+       isThinking: false
+     }));
     
     // Store this active response generation
     const responseId = Date.now().toString();
@@ -167,10 +167,10 @@ Always return your response as a valid JSON object with two keys: response (your
     console.log(`Extracted emotion: ${emotionTag}`);
 
     // Send emotion detected (needed for voice selection and client-side emotion display)
-    ws.send(JSON.stringify({
-      type: 'emotion_detected',
-      emotion: emotionTag
-    }));
+     ws.send(JSON.stringify({
+       type: 'emotion_detected',
+       emotion: emotionTag
+     }));
     
     // Send filler audio immediately after emotion detection if audio response is enabled
     if (sessionData.responseMode === 'audio' || sessionData.responseMode === 'both') {
@@ -184,7 +184,6 @@ Always return your response as a valid JSON object with two keys: response (your
             type: 'filler_audio',
             audio: fillerAudio.audio,
             format: fillerAudio.format,
-            messageId: messageId,
             fillerName: fillerAudio.fillerName
           }));
           
@@ -220,34 +219,112 @@ Always return your response as a valid JSON object with two keys: response (your
     }
 
     // Immediately start text streaming (don't wait for audio)
+    let textStreamingComplete = false;
+    let textStreamingPromise = null;
+    
+    // Set a maximum wait time for text streaming to complete (5 seconds)
+    const maxWaitTime = 5000;
+    const textStreamingStartTime = Date.now();
+    
     if (sessionData.responseMode === 'text' || sessionData.responseMode === 'both') {
-      const chunkSize = 10; // Number of characters per chunk
-      const streamTextPromise = (async () => {
-        for (let i = 0; i < cleanResponse.length; i += chunkSize) {
-          // Check if this response has been interrupted
-          if (activeResponseGenerations.get(userId) !== responseId) {
-            console.log(`Response generation ${responseId} was interrupted`);
-            break;
+      const chunkSize = 20; // Set to full response length to send all text at once
+      textStreamingPromise = (async () => {
+        try {
+          // Add a timeout to ensure streaming completes even if interrupted
+          const streamingTimeout = setTimeout(() => {
+            console.log(`Text streaming timeout triggered for user ${userId}`);
+            textStreamingComplete = true;
+          }, maxWaitTime);
+          
+          // Keep track of how much of the response we've sent
+          let sentCharacters = 0;
+          
+          for (let i = 0; i < cleanResponse.length; i += chunkSize) {
+            // Removed interruption check to ensure full response is sent
+            // Always send the full response regardless of interruption status
+            
+            const textChunk = cleanResponse.substring(i, i + chunkSize);
+            try {
+               ws.send(JSON.stringify({
+                 type: 'text_chunk',
+                 text: textChunk
+               }));
+               sentCharacters += textChunk.length;
+             } catch (wsError) {
+               console.error(`WebSocket error while sending text chunk: ${wsError}`);
+               textStreamingComplete = true;
+               break;
+             }
+            
+            // Small delay between chunks to simulate typing
+            await new Promise(resolve => setTimeout(resolve, 10));
           }
           
-          const textChunk = cleanResponse.substring(i, i + chunkSize);
-          ws.send(JSON.stringify({
-            type: 'text_chunk',
-            text: textChunk,
-            messageId: messageId // Pass through the message ID for timeout handling
-          }));
+          // Clear the timeout since we completed normally
+          clearTimeout(streamingTimeout);
           
-          // Small delay between chunks to simulate typing
-          await new Promise(resolve => setTimeout(resolve, 50));
+          // If we didn't send the full response, send it now
+          if (sentCharacters < cleanResponse.length) {
+            const remainingText = cleanResponse.substring(sentCharacters);
+            ws.send(JSON.stringify({
+              type: 'text_chunk',
+              text: remainingText
+            }));
+            console.log(`Sent remaining ${remainingText.length} characters for user ${userId}`);
+            sentCharacters += remainingText.length;
+          }
+          
+          console.log(`Completed text streaming for user ${userId}, sent ${sentCharacters}/${cleanResponse.length} characters`);
+          textStreamingComplete = true;
+          return true;
+        } catch (error) {
+          console.error(`Error in text streaming for user ${userId}:`, error);
+          textStreamingComplete = true;
+          return false;
         }
-        console.log(`Completed text streaming for user ${userId}`);
       })();
       
-      // Don't await the text streaming - let it run in parallel with audio processing
+      // We'll still run this in parallel but track its completion
     } else {
       console.log(`Skipping text response for user ${userId} (responseMode: ${sessionData.responseMode})`);
+      textStreamingComplete = true;
     }
 
+    // Track whether response_complete has been sent to avoid duplicates
+    let responseCompleteSent = false;
+    
+    // Function to send response_complete only once
+    const sendResponseComplete = () => {
+      if (responseCompleteSent) return;
+      
+      // Make sure text streaming is complete before sending response_complete
+      // Or force completion if it's taking too long
+      if (!textStreamingComplete) {
+        const waitTime = Date.now() - textStreamingStartTime;
+        if (waitTime > maxWaitTime) {
+          console.log(`Text streaming taking too long (${waitTime}ms), forcing response_complete for user ${userId}`);
+          textStreamingComplete = true; // Force it to complete
+        } else {
+          console.log(`Waiting for text streaming to complete before sending response_complete for user ${userId}`);
+          setTimeout(sendResponseComplete, 100);
+          return;
+        }
+      }
+      
+      responseCompleteSent = true;
+      try {
+        ws.send(JSON.stringify({
+          type: 'response_complete',
+          emotion: emotionTag,
+          responseMode: sessionData.responseMode, // Include the response mode used
+          mode: sessionData.mode // Include the conversation mode used
+        }));
+        console.log(`Sent response_complete for user ${userId}`);
+      } catch (error) {
+        console.warn(`Failed to send response_complete for user ${userId}: ${error.message}`);
+      }
+    };
+    
     // Process audio stream in parallel with text streaming
     if (audioPromise) {
       try {
@@ -261,72 +338,88 @@ Always return your response as a valid JSON object with two keys: response (your
           let chunkCount = 0;
           let totalBytes = 0;
           
+          // Set up error handling before starting stream processing
+          const handleStreamError = (err) => {
+             console.error('Error in audio stream:', err);
+             try {
+               ws.send(JSON.stringify({
+                 type: 'error',
+                 message: 'Error in audio stream'
+               }));
+             } catch (sendError) {
+               console.error('Failed to send error message:', sendError);
+             }
+             // Still try to send response_complete on error
+             sendResponseComplete();
+           };
+          
+          // Add error handler for the overall response
+          ttsResponse.data.on('error', handleStreamError);
+          
           ttsResponse.data.on('data', (chunk) => {
-            chunkCount++;
-            totalBytes += chunk.length;
-            
-            // First send a small JSON message to notify the client about the incoming binary chunk
-            ws.send(JSON.stringify({
-              type: 'audio_chunk_header',
-              chunkSize: chunk.length,
-              format: 'mp3',
-              messageId: messageId,
-              emotion: emotionTag,
-              chunkNumber: chunkCount
-            }));
-            
-            // Then send the actual binary chunk directly without base64 conversion
-            // This enables immediate playback as soon as chunks arrive
-            ws.send(chunk);
+            try {
+              chunkCount++;
+              totalBytes += chunk.length;
+              
+              // First send a small JSON message to notify the client about the incoming binary chunk
+               ws.send(JSON.stringify({
+                 type: 'audio_chunk_header',
+                 chunkSize: chunk.length,
+                 format: 'mp3',
+                 emotion: emotionTag,
+                 chunkNumber: chunkCount
+               }));
+               
+               // Then send the actual binary chunk directly without base64 conversion
+               // This enables immediate playback as soon as chunks arrive
+               ws.send(chunk);
+            } catch (chunkError) {
+              handleStreamError(chunkError);
+            }
           });
           
           ttsResponse.data.on('end', () => {
             // Signal that audio streaming is complete
-            ws.send(JSON.stringify({
-              type: 'audio_complete',
-              messageId: messageId
-            }));
-            console.log(`Completed audio streaming for user ${userId}`);
-            console.log(`Streamed ${chunkCount} audio chunks (${totalBytes} bytes) in ${Date.now() - audioStartTime}ms`);
-            
-            // Now that audio streaming is complete, send the response_complete message
-            ws.send(JSON.stringify({
-              type: 'response_complete',
-              messageId: messageId || chatId, // Use the original messageId if available
-              emotion: emotionTag,
-              responseMode: sessionData.responseMode, // Include the response mode used
-              mode: sessionData.mode // Include the conversation mode used
-            }));
+            try {
+              ws.send(JSON.stringify({
+                type: 'audio_complete'
+              }));
+              console.log(`Completed audio streaming for user ${userId}`);
+              console.log(`Streamed ${chunkCount} audio chunks (${totalBytes} bytes) in ${Date.now() - audioStartTime}ms`);
+              
+              // Now that audio streaming is complete, send the response_complete message
+              // Use a small timeout to ensure all audio chunks are processed
+              setTimeout(sendResponseComplete, 100); // Increased timeout to ensure all chunks are processed
+            } catch (error) {
+              console.error(`Error sending audio_complete: ${error.message}`);
+              sendResponseComplete(); // Still try to send response_complete
+            }
           });
-          
-          ttsResponse.data.on('error', (err) => {
-            console.error('Error in audio stream:', err);
-            ws.send(JSON.stringify({
-              type: 'error',
-              message: 'Error in audio stream'
-            }));
-          });
+        } else {
+          // No ttsResponse, still send response_complete
+          console.log(`No audio response generated for user ${userId}`);
+          sendResponseComplete();
         }
       } catch (error) {
-        console.error('Error processing audio stream:', error);
-        ws.send(JSON.stringify({
-          type: 'error',
-          message: 'Error generating audio response'
-        }));
+        console.error('Error generating audio response:', error);
+        try {
+          ws.send(JSON.stringify({
+            type: 'error',
+            message: 'Error generating audio response'
+          }));
+        } catch (sendError) {
+          console.error('Failed to send error message:', sendError);
+        }
+        // Still try to send response_complete on error with a small delay to ensure client receives the error first
+        setTimeout(sendResponseComplete, 50);
       }
     } else {
       console.log(`Skipping audio response for user ${userId} (responseMode: ${sessionData.responseMode})`);
       
-      // If no audio response, send response_complete immediately
-      ws.send(JSON.stringify({
-        type: 'response_complete',
-        messageId: messageId || chatId, // Use the original messageId if available
-        emotion: emotionTag,
-        responseMode: sessionData.responseMode,
-        mode: sessionData.mode
-      }));
+      // If no audio response, wait for text streaming to complete then send response_complete
+      setTimeout(sendResponseComplete, 100);
     }
-
+    
 
 
     // Store conversation entry
@@ -386,39 +479,39 @@ Always return your response as a valid JSON object with two keys: response (your
     (async () => {
       try {
         // Start tracking user behavior
-        const currentOpenTime = new Date();
-        await updateUserBehaviorTracking(userId, currentOpenTime);
+        // const currentOpenTime = new Date();
+        // await updateUserBehaviorTracking(userId, currentOpenTime);
         
         // Save chat to Firestore
         const db = admin.firestore();
         
         // Save to chat history collection
-        await db.collection('chatHistory').doc(chatId).set(chatEntry);
+        // await db.collection('chatHistory').doc(chatId).set(chatEntry);
         
         // Update user's chat array
-        const userRef = db.collection('users').doc(userId);
-        const userDoc = await userRef.get();
+        // const userRef = db.collection('users').doc(userId);
+        // const userDoc = await userRef.get();
         
-        if (userDoc.exists) {
-          await userRef.update({
-            chatIds: admin.firestore.FieldValue.arrayUnion(chatId)
-          });
-        } else {
-          await userRef.set({
-            id: userId,
-            chatIds: [chatId],
-            emotionState: {
-              currentEmotion: emotionTag,
-              lastUpdated: new Date()
-            }
-          });
-        }
+        // if (userDoc.exists) {
+        //   await userRef.update({
+        //     chatIds: admin.firestore.FieldValue.arrayUnion(chatId)
+        //   });
+        // } else {
+        //   await userRef.set({
+        //     id: userId,
+        //     chatIds: [chatId],
+        //     emotionState: {
+        //       currentEmotion: emotionTag,
+        //       lastUpdated: new Date()
+        //     }
+        //   });
+        // }
         
         // Update emotion state
-        await userRef.update({
-          'emotionState.currentEmotion': emotionTag,
-          'emotionState.lastUpdated': new Date()
-        });
+        // await userRef.update({
+        //   'emotionState.currentEmotion': emotionTag,
+        //   'emotionState.lastUpdated': new Date()
+        // });
         
         // Get updated chat history and generate summary
         const updatedChatHistory = await getChatHistoryForUser(userId, 0);
@@ -443,23 +536,15 @@ Always return your response as a valid JSON object with two keys: response (your
           }
         }
         
-        console.log(`Successfully completed all database operations for user ${userId}`);
+        console.log(`Successfully completed chat summary creation for user ${userId}`);
       } catch (error) {
         console.error('Error in post-response operations:', error);
       }
     })();
 
-    // Only send completion message immediately if there's no audio response
-    // For audio responses, the completion message will be sent after audio streaming is complete
-    if (!audioPromise) {
-      ws.send(JSON.stringify({
-        type: 'response_complete',
-        messageId: messageId || chatId, // Use the original messageId if available
-        emotion: emotionTag,
-        responseMode: sessionData.responseMode, // Include the response mode used
-        mode: sessionData.mode // Include the conversation mode used
-      }));
-    }
+    // We now handle the response_complete message through the sendResponseComplete function
+    // which ensures it's only sent once and after text streaming is complete
+    // No need to send it here as it's handled in the audio/text processing sections
     
     // Clear the active response generation
     if (activeResponseGenerations.get(userId) === responseId) {
@@ -500,7 +585,6 @@ async function handleAudioMessage(ws, data, sessionData) {
         type: 'transcription',
         text: errorMessage
       }));
-      //STOP
       ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
       
       // Don't process the error message further - just stop here
@@ -517,7 +601,6 @@ async function handleAudioMessage(ws, data, sessionData) {
         type: 'transcription',
         text: errorMessage
       }));
-      //STOP
       ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
       
       // Don't process the error message further - just stop here
@@ -551,7 +634,6 @@ async function handleAudioMessage(ws, data, sessionData) {
         type: 'transcription',
         text: errorMessage
       }));
-      //STOP
       ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
       
       // Don't process the error message further - just stop here
@@ -562,10 +644,11 @@ async function handleAudioMessage(ws, data, sessionData) {
     const transcribedText = await transcribeAudio(audioBuffer, format);
     
     // Check if transcription failed (and transcribeAudio returned an error message)
-    if (transcribedText.includes("I couldn't detect any clear speech") || transcribedText.includes("I had trouble processing your audio") || transcribedText.includes("user is silence")) {
+    if (transcribedText.includes("I couldn't detect any clear speech") || 
+        transcribedText.includes("I had trouble processing your audio") || 
+        transcribedText.includes("user is silence")) {
       console.warn(`Transcription failed for user ${userId}: ${transcribedText}`);
       ws.send(JSON.stringify({ type: 'transcription', text: transcribedText })); // Send error to client
-      //STOP
       ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
       
       // Don't process the error message further - just stop here
@@ -578,24 +661,22 @@ async function handleAudioMessage(ws, data, sessionData) {
       text: transcribedText
     }));
     
-    // Process the transcribed text as a user message (preserving responseMode and mode)
-    //NEW IF STOP
+    // Process the transcribed text as a user message
     if (transcribedText) {
-        // Check if transcription was successful (not an error message)
-        const isTranscriptionError = transcribedText.includes("I couldn't detect any clear speech") || 
-                                   transcribedText.includes("I had trouble processing your audio") ||
-                                   transcribedText.includes("user is silence");
-        
-        await handleUserMessage(ws, { 
-            userId, 
-            message: transcribedText, 
-            messageId,
-            responseMode: data.responseMode || sessionData.responseMode,
-            mode: data.mode || sessionData.mode,
-            isAudioMessage: true,
-            // Always set originalAudio to null to prevent storing raw audio data
-            originalAudio: null
-        }, sessionData);
+      // Check if transcription was successful (not an error message)
+      const isTranscriptionError = transcribedText.includes("I couldn't detect any clear speech") || 
+                               transcribedText.includes("I had trouble processing your audio") ||
+                               transcribedText.includes("user is silence");
+      
+      await handleUserMessage(ws, { 
+          userId, 
+          message: transcribedText, 
+          responseMode: data.responseMode || sessionData.responseMode,
+          mode: data.mode || sessionData.mode,
+          isAudioMessage: true,
+          // Always set originalAudio to null to prevent storing raw audio data
+          originalAudio: null
+      }, sessionData);
     }
   } catch (error) {
     console.error('Error processing audio message:', error);
@@ -610,18 +691,14 @@ async function handleAudioMessage(ws, data, sessionData) {
       type: 'error',
       message: errorMessage
     }));
-    //STOP
-      ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
+    ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
 
     // Also send as transcription so it appears in the chat
     ws.send(JSON.stringify({
       type: 'transcription',
       text: errorMessage
     }));
-
-       // Don't process the error message further - just stop here
-       // No need to call handleUserMessage for error cases
-    }
+  }
 }
 
 // Periodic syncing of in-memory sessions to Firestore has been disabled as requested
@@ -665,6 +742,9 @@ module.exports = function(wss) {
   
   wss.on('connection', (ws) => {
     console.log('WebSocket client connected');
+    
+    // This function will be defined in the connection scope
+    
     let userId = 'test_user_id';
     let sessionData = {
       userId,
@@ -680,11 +760,27 @@ module.exports = function(wss) {
       userId
     }));
 
-    // Add this at the top of the file with other variables
+    // Remove this line from the top of the file with other variables
+    // let pendingAudioMessages = new Map(); // To store metadata for incoming binary audio
     
-    // Modify the ws.on('message') handler
+    // Modify the ws.on('message') handler to remove binary data handling
     ws.on('message', async (message) => {
       try {
+        // Remove this binary data check
+        // if (message instanceof Buffer) {
+        //   // If we have pending audio metadata, process this binary data
+        //   if (pendingAudioMessages.has(userId)) {
+        //     const audioMetadata = pendingAudioMessages.get(userId);
+        //     pendingAudioMessages.delete(userId);
+        //     
+        //     // Process the binary audio data directly
+        //     await processRawAudioData(ws, message, audioMetadata, sessionData);
+        //     return;
+        //   } else {
+        //     console.warn('Received binary data without metadata');
+        //     return;
+        //   }
+        // }
         
         // Handle JSON messages as before
         let data;
@@ -735,10 +831,11 @@ module.exports = function(wss) {
         }
         
         switch (data.type) {
-          case 'audio_message_metadata':
-            // Store metadata for the upcoming binary audio data
-            pendingAudioMessages.set(userId, data);
-            break;
+          // Remove this case
+          // case 'audio_message_metadata':
+          //   // Store metadata for the upcoming binary audio data
+          //   pendingAudioMessages.set(userId, data);
+          //   break;
             
           case 'message':
             // For messages sent with {type: 'message', text: '...'} format
@@ -762,7 +859,7 @@ module.exports = function(wss) {
             break;
 
           case 'audio_message':
-            // Legacy support for base64 encoded audio
+            // Base64 encoded audio
             await handleAudioMessage(ws, data, sessionData);
             break;
 
@@ -792,6 +889,12 @@ module.exports = function(wss) {
 
     ws.on('close', () => {
       console.log('WebSocket client disconnected');
+      // Clean up any active response generations for this user
+      if (activeResponseGenerations.has(userId)) {
+        console.log(`Cleaning up active response generation for user ${userId}`);
+        activeResponseGenerations.delete(userId);
+      }
+      // Any other cleanup needed for this user's session
     });
   });
   
