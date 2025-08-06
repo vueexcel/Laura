@@ -82,10 +82,13 @@ Always return your response as a valid JSON object with two keys: response (your
     // Add conversation history for context (last 5 messages)
     const recentHistory = sessionData.conversationHistory.slice(-5);
     for (const entry of recentHistory) {
-      messages.push(
-        { role: 'user', content: entry.question },
-        { role: 'assistant', content: JSON.stringify({ response: entry.response, emotion_tag: entry.emotionTag }) }
-      );
+      // Only add entries where both question and response are valid strings
+      if (entry.question && entry.response) {
+        messages.push(
+          { role: 'user', content: entry.question },
+          { role: 'assistant', content: JSON.stringify({ response: entry.response, emotion_tag: entry.emotionTag || 'neutral' }) }
+        );
+      }
     }
 
     // Add current user message
@@ -425,9 +428,9 @@ Always return your response as a valid JSON object with two keys: response (your
     // Store conversation entry
     const chatEntry = {
       id: chatId,
-      question: message,
-      response: cleanResponse,
-      emotionTag: emotionTag,
+      question: message || "[No message content]", // Add default value if message is undefined
+      response: cleanResponse || "[No response content]", // Add default for response too
+      emotionTag: emotionTag || "neutral", // Default emotion tag
       timestamp: new Date(),
       userId: userId
       // Removed duplicate user_id field
@@ -453,24 +456,24 @@ Always return your response as a valid JSON object with two keys: response (your
     }
     
     // Ensure no JSON data is saved in the chat history
-    if (typeof message === 'string' && (message.trim().startsWith('{') && message.trim().endsWith('}')) || 
-        (message.trim().startsWith('[') && message.trim().endsWith(']'))) {
-      console.warn('Detected possible JSON data in message - not saving raw JSON to chat history');
-      // Try to extract text content if it's a JSON object with a text/message field
-      try {
-        const jsonObj = JSON.parse(message.trim());
-        if (jsonObj.text || jsonObj.message || jsonObj.content) {
-          chatEntry.question = jsonObj.text || jsonObj.message || jsonObj.content;
-          console.log('Extracted text content from JSON object for chat history');
-        } else {
-          console.warn('JSON object does not contain recognizable text field - using placeholder');
-          chatEntry.question = "[Message contained data that couldn't be displayed]";
-        }
-      } catch (e) {
-        console.warn('Failed to parse JSON data - using placeholder');
-        chatEntry.question = "[Message contained data that couldn't be displayed]";
-      }
-    }
+    // if (message && typeof message === 'string' && ((message.trim().startsWith('{') && message.trim().endsWith('}')) || 
+    //     (message.trim().startsWith('[') && message.trim().endsWith(']')))) {
+    //   console.warn('Detected possible JSON data in message - not saving raw JSON to chat history');
+    //   // Try to extract text content if it's a JSON object with a text/message field
+    //   try {
+    //     const jsonObj = JSON.parse(message.trim());
+    //     if (jsonObj.text || jsonObj.message || jsonObj.content) {
+    //       chatEntry.question = jsonObj.text || jsonObj.message || jsonObj.content;
+    //       console.log('Extracted text content from JSON object for chat history');
+    //     } else {
+    //       console.warn('JSON object does not contain recognizable text field - using placeholder');
+    //       chatEntry.question = "[Message contained data that couldn't be displayed]";
+    //     }
+    //   } catch (e) {
+    //     console.warn('Failed to parse JSON data - using placeholder');
+    //     chatEntry.question = "[Message contained data that couldn't be displayed]";
+    //   }
+    // }
 
     // Add to in-memory conversation history
     sessionData.conversationHistory.push(chatEntry);
@@ -486,38 +489,38 @@ Always return your response as a valid JSON object with two keys: response (your
         const db = admin.firestore();
         
         // Save to chat history collection
-        // await db.collection('chatHistory').doc(chatId).set(chatEntry);
+        await db.collection('chatHistory').doc(chatId).set(chatEntry);
         
         // Update user's chat array
-        // const userRef = db.collection('users').doc(userId);
-        // const userDoc = await userRef.get();
+        const userRef = db.collection('users').doc(userId);
+        const userDoc = await userRef.get();
         
-        // if (userDoc.exists) {
-        //   await userRef.update({
-        //     chatIds: admin.firestore.FieldValue.arrayUnion(chatId)
-        //   });
-        // } else {
-        //   await userRef.set({
-        //     id: userId,
-        //     chatIds: [chatId],
-        //     emotionState: {
-        //       currentEmotion: emotionTag,
-        //       lastUpdated: new Date()
-        //     }
-        //   });
-        // }
+        if (userDoc.exists) {
+          await userRef.update({
+            chatIds: admin.firestore.FieldValue.arrayUnion(chatId)
+          });
+        } else {
+          await userRef.set({
+            id: userId,
+            chatIds: [chatId],
+            emotionState: {
+              currentEmotion: emotionTag,
+              lastUpdated: new Date()
+            }
+          });
+        }
         
         // Update emotion state
-        // await userRef.update({
-        //   'emotionState.currentEmotion': emotionTag,
-        //   'emotionState.lastUpdated': new Date()
-        // });
+        await userRef.update({
+          'emotionState.currentEmotion': emotionTag,
+          'emotionState.lastUpdated': new Date()
+        });
         
         // Get updated chat history and generate summary
-        const updatedChatHistory = await getChatHistoryForUser(userId, 0);
+        const updatedChatHistory = await getChatHistoryForUser(userId, 1); // Only get the 10 most recent chats
         
         if (updatedChatHistory && updatedChatHistory.length > 0) {
-          const newChatSummary = await generateChatSummary(updatedChatHistory);
+          const newChatSummary = await generateChatSummary(updatedChatHistory, userId); // Pass userId to get existing summary
           
           const chatSummaryRef = db.collection('chatSummary').doc(userId);
           const chatSummaryDoc = await chatSummaryRef.get();
@@ -566,7 +569,103 @@ Always return your response as a valid JSON object with two keys: response (your
   }
 }
 
-// Handle audio messages
+// Process raw binary audio data
+// async function processRawAudioData(ws, audioBuffer, metadata, sessionData) {
+//   const { userId, format } = metadata;
+  
+//   // Send thinking status
+//   ws.send(JSON.stringify({
+//     type: 'thinking_status',
+//     isThinking: true
+//   }));
+
+//   try {
+//     // Validate audio buffer
+//     if (!audioBuffer || !(audioBuffer instanceof Buffer)) {
+//       console.warn('Invalid audio data: Audio buffer is missing or not a Buffer');
+//       const errorMessage = "I didn't receive valid audio data. Please try recording again.";
+//       ws.send(JSON.stringify({
+//         type: 'transcription',
+//         text: errorMessage
+//       }));
+//       ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
+      
+//       // Don't process the error message further - just stop here
+//       return; // Stop further processing
+//     }
+
+//     // Check if the buffer is too small (likely invalid audio)
+//     if (audioBuffer.length < 100) { // Arbitrary small size threshold
+//       console.warn('Audio buffer too small to be valid');
+//       const errorMessage = "The audio data appears to be too short. Please try recording again.";
+      
+//       // Send transcription error to client
+//       ws.send(JSON.stringify({
+//         type: 'transcription',
+//         text: errorMessage
+//       }));
+//       ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
+      
+//       return; // Stop processing
+//     }
+    
+//     console.log(`Processing raw audio buffer of size: ${audioBuffer.length} bytes`);
+    
+//     // Transcribe audio directly from buffer without saving to a temporary file
+//     const transcribedText = await transcribeAudio(audioBuffer, format);
+    
+//     // Check if transcription failed (and transcribeAudio returned an error message)
+//     if (transcribedText.includes("I couldn't detect any clear speech") || 
+//         transcribedText.includes("I had trouble processing your audio") || 
+//         transcribedText.includes("user is silence")) {
+//       console.warn(`Transcription failed for user ${userId}: ${transcribedText}`);
+//       ws.send(JSON.stringify({ type: 'transcription', text: transcribedText })); // Send error to client
+//       ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
+      
+//       // Don't process the error message further - just stop here
+//       return; // Stop processing
+//     }
+    
+//     // Send transcription to client
+//     ws.send(JSON.stringify({
+//       type: 'transcription',
+//       text: transcribedText
+//     }));
+    
+//     // Process the transcribed text as a user message
+//     if (transcribedText) {
+//       await handleUserMessage(ws, { 
+//           userId, 
+//           message: transcribedText, 
+//           responseMode: metadata.responseMode || sessionData.responseMode,
+//           mode: metadata.mode || sessionData.mode,
+//           isAudioMessage: true,
+//           // Don't store raw audio data
+//           originalAudio: null
+//       }, sessionData);
+//     }
+//   } catch (error) {
+//     console.error('Error processing raw audio data:', error);
+    
+//     // Create a user-friendly error message
+//     const errorMessage = "I had trouble processing your audio. Could you please try speaking more clearly or typing your message instead.";
+    
+//     // Send error to client
+//     ws.send(JSON.stringify({
+//       type: 'error',
+//       message: errorMessage
+//     }));
+//     ws.send(JSON.stringify({ type: 'thinking_status', isThinking: false }));
+
+//     // Also send as transcription so it appears in the chat
+//     ws.send(JSON.stringify({
+//       type: 'transcription',
+//       text: errorMessage
+//     }));
+//   }
+// }
+
+// Handle audio messages (base64 encoded)
 async function handleAudioMessage(ws, data, sessionData) {
   const { userId, audio, format, messageId } = data;
   
@@ -760,13 +859,12 @@ module.exports = function(wss) {
       userId
     }));
 
-    // Remove this line from the top of the file with other variables
-    // let pendingAudioMessages = new Map(); // To store metadata for incoming binary audio
+    // Store metadata for incoming binary audio
+    // let pendingAudioMessages = new Map();
     
-    // Modify the ws.on('message') handler to remove binary data handling
     ws.on('message', async (message) => {
       try {
-        // Remove this binary data check
+        // Check if message is binary data (Buffer)
         // if (message instanceof Buffer) {
         //   // If we have pending audio metadata, process this binary data
         //   if (pendingAudioMessages.has(userId)) {
@@ -831,7 +929,6 @@ module.exports = function(wss) {
         }
         
         switch (data.type) {
-          // Remove this case
           // case 'audio_message_metadata':
           //   // Store metadata for the upcoming binary audio data
           //   pendingAudioMessages.set(userId, data);
