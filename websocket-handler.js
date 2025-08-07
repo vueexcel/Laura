@@ -22,10 +22,13 @@ const userSessions = new Map();
 // Variable to track active response generation for interruption handling
 let activeResponseGenerations = new Map();
 // Generate unique ID for chat entry
-const chatId = Date.now().toString();
+const chatId = Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9);
 // Handle user text messages
 async function handleUserMessage(ws, data, sessionData) {
       const { userId, message, responseMode, mode } = data;
+      
+      // Generate unique ID for this specific chat entry
+      const chatId = Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9);
   
   // Store response mode in session data (default to 'both' if not specified)
   sessionData.responseMode = responseMode || sessionData.responseMode || 'both';
@@ -517,11 +520,11 @@ Always return your response as a valid JSON object with two keys: response (your
         });
         
         // Get updated chat history and generate summary
-        const updatedChatHistory = await getChatHistoryForUser(userId, 1); // Only get the 10 most recent chats
+        const chatHistoryResult = await getChatHistoryForUser(userId, 1); // Get the first page of chat history
+        const updatedChatHistory = chatHistoryResult.data; // Extract the data array from the result
         
         if (updatedChatHistory && updatedChatHistory.length > 0) {
-          const newChatSummary = await generateChatSummary(updatedChatHistory, userId); // Pass userId to get existing summary
-          
+          const newChatSummary = await generateChatSummary(updatedChatHistory, userId);
           const chatSummaryRef = db.collection('chatSummary').doc(userId);
           const chatSummaryDoc = await chatSummaryRef.get();
           

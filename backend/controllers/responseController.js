@@ -262,26 +262,64 @@ const getChatHistory = asyncHandler(async (req, res) => {
     let userId = req.params.userId || (req.user ? req.user.id : "test_user_id");
 
     try {
-        // Get limit from query params or default to 10
+        // Get pagination parameters
+        const page = req.query.page ? parseInt(req.query.page) : 1;
         const limit = req.query.limit ? parseInt(req.query.limit) : 10;
+        
+        // Get filter parameters
+        const filters = {
+            startDate: req.query.startDate ? new Date(req.query.startDate) : null,
+            endDate: req.query.endDate ? new Date(req.query.endDate) : null,
+            emotionTag: req.query.emotionTag || null
+        };
+        
+        // Get sorting parameters
+        const sortOptions = {
+            field: req.query.sortBy || 'timestamp',
+            order: req.query.sortOrder || 'desc'
+        };
         
         // Check if semantic search is requested
         if (req.query.search) {
             // Perform semantic search using Firestore
-            const searchResults = await semanticSearch(userId, req.query.search, limit);
+            const searchResults = await semanticSearch(
+                userId, 
+                req.query.search, 
+                limit,
+                filters,
+                sortOptions
+            );
             
             res.status(200).json({
                 success: true,
-                chatHistory: searchResults,
-                searchQuery: req.query.search
+                chatHistory: searchResults.data,
+                searchQuery: req.query.search,
+                metadata: {
+                    page: page,
+                    limit: limit,
+                    totalItems: searchResults.totalItems,
+                    totalPages: Math.ceil(searchResults.totalItems / limit)
+                }
             });
         } else {
             // Use the Firestore helper function to get regular chat history
-            const chatHistory = await getChatHistoryForUser(userId, limit);
+            const result = await getChatHistoryForUser(
+                userId, 
+                page, 
+                limit, 
+                filters, 
+                sortOptions
+            );
 
             res.status(200).json({
                 success: true,
-                chatHistory: chatHistory
+                chatHistory: result.data,
+                metadata: {
+                    page: page,
+                    limit: limit,
+                    totalItems: result.totalItems,
+                    totalPages: Math.ceil(result.totalItems / limit)
+                }
             });
         }
     } catch (error) {

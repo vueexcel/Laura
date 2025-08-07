@@ -436,34 +436,68 @@ Hello! I was just thinking about what you said yesterday. It stayed with me, in 
 /**
  * Retrieves chat history for a specific user from the chatHistory collection
  * @param {string} userId - The user ID to fetch history for
- * @param {number} limit - Maximum number of chat entries to return (default: 10)
- * @returns {Promise<Array>} - Array of chat entries
+ * @param {number} page - The page number to retrieve (default: 1)
+ * @param {number} limit - Maximum number of chat entries per page (default: 10)
+ * @param {Object} filters - Filter options (startDate, endDate, emotionTag)
+ * @param {Object} sortOptions - Sorting options (field, order)
+ * @returns {Promise<Object>} - Object containing chat entries and total count
  */
-async function getChatHistoryForUser(userId, limit = 10) {
+async function getChatHistoryForUser(userId, page = 1, limit = 10, filters = {}, sortOptions = { field: 'timestamp', order: 'desc' }) {
   try {
-    console.log(`Retrieving chat history for user ${userId} with limit ${limit}`);
+    console.log(`Retrieving chat history for user ${userId} with page ${page}, limit ${limit}`);
+    
+    // Calculate offset for pagination
+    const offset = (page - 1) * limit;
     
     // Query the chatHistory collection directly for entries matching the userId
     const chatHistoryRef = db.collection('chatHistory');
-    const query = chatHistoryRef.where('userId', '==', userId)
-                              .orderBy('timestamp', 'desc')
-                              .limit(limit);
     
+    // Start with base query
+    let query = chatHistoryRef.where('userId', '==', userId);
+    
+    // Apply date filters if provided
+    if (filters.startDate) {
+      query = query.where('timestamp', '>=', filters.startDate);
+    }
+    
+    if (filters.endDate) {
+      query = query.where('timestamp', '<=', filters.endDate);
+    }
+    
+    // Apply sorting
+    query = query.orderBy(sortOptions.field, sortOptions.order);
+    
+    // Get total count first (for pagination metadata)
+    const countSnapshot = await query.get();
+    const totalItems = countSnapshot.size;
+    
+    // Apply pagination
+    query = query.limit(limit).offset(offset);
+    
+    // Execute the query
     const chatSnapshot = await query.get();
     
     if (chatSnapshot.empty) {
       console.log(`No chat history found for user ${userId}`);
-      return [];
+      return { data: [], totalItems: 0 };
     }
     
     // Convert the query snapshot to an array of chat entries
     const chatEntries = [];
     chatSnapshot.forEach(doc => {
-      chatEntries.push(doc.data());
+      // If emotionTag filter is applied, filter in memory
+      // (Firestore doesn't support multiple field filters with different operators)
+      const data = doc.data();
+      if (!filters.emotionTag || data.emotionTag === filters.emotionTag) {
+        chatEntries.push(data);
+      }
     });
     
     console.log(`Retrieved ${chatEntries.length} chat entries for user ${userId}`);
-    return chatEntries;
+    return { 
+      data: chatEntries,
+      totalItems: filters.emotionTag ? chatEntries.length : totalItems // Adjust count if filtered in memory
+    };
   } catch (error) {
     console.error('Error retrieving chat history:', error);
     throw new Error('Failed to retrieve chat history: ' + error.message);
@@ -665,21 +699,33 @@ async function addEmbeddingsToChatEntry(userId, chatEntry) {
  * Performs a semantic search on the user's chat history
  * @param {string} userId - The user ID
  * @param {string} query - The search query
- * @param {number} limit - Maximum number of results to return
- * @returns {Promise<Array>} - Array of matching chat entries
+ * @param {number} limit - Maximum number of results per page
+ * @param {Object} filters - Filter options (startDate, endDate, emotionTag)
+ * @param {Object} sortOptions - Sorting options (field, order)
+ * @returns {Promise<Object>} - Object containing matching chat entries and total count
  */
-// Temporarily modified to handle disabled embeddings
-async function semanticSearch(userId, query, limit = 5) {
+async function semanticSearch(userId, query, limit = 10, filters = {}, sortOptions = { field: 'timestamp', order: 'desc' }) {
   try {
     console.log('Semantic search with embeddings temporarily disabled');
     
     // Query all chat entries directly from the chatHistory collection for this user
     const chatHistoryRef = db.collection('chatHistory');
-    const chatSnapshot = await chatHistoryRef.where('userId', '==', userId).get();
+    let baseQuery = chatHistoryRef.where('userId', '==', userId);
+    
+    // Apply date filters if provided
+    if (filters.startDate) {
+      baseQuery = baseQuery.where('timestamp', '>=', filters.startDate);
+    }
+    
+    if (filters.endDate) {
+      baseQuery = baseQuery.where('timestamp', '<=', filters.endDate);
+    }
+    
+    const chatSnapshot = await baseQuery.get();
     
     if (chatSnapshot.empty) {
       console.log(`No chat entries found for user ${userId} in chatHistory collection`);
-      return [];
+      return { data: [], totalItems: 0 };
     }
     
     // Collect all chat entries
@@ -688,8 +734,14 @@ async function semanticSearch(userId, query, limit = 5) {
       chatEntries.push(doc.data());
     });
     
+    // Apply emotion tag filter in memory if provided
+    let filteredEntries = chatEntries;
+    if (filters.emotionTag) {
+      filteredEntries = chatEntries.filter(entry => entry.emotionTag === filters.emotionTag);
+    }
+    
     // Since embeddings are disabled, perform a simple text search instead
-    const results = chatEntries.filter(entry => {
+    const results = filteredEntries.filter(entry => {
       // Simple text matching - check if query terms appear in the question or response
       const queryTerms = query.toLowerCase().split(' ');
       const questionText = entry.question.toLowerCase();
@@ -701,14 +753,33 @@ async function semanticSearch(userId, query, limit = 5) {
       );
     });
     
-    // Sort by timestamp (newest first) and limit results
-    return results
-      .sort((a, b) => {
+    // Sort results based on provided sort options
+    const sortedResults = results.sort((a, b) => {
+      // Handle timestamp sorting
+      if (sortOptions.field === 'timestamp') {
         const timeA = new Date(a.timestamp.toDate ? a.timestamp.toDate() : a.timestamp);
         const timeB = new Date(b.timestamp.toDate ? b.timestamp.toDate() : b.timestamp);
-        return timeB - timeA;
-      })
-      .slice(0, limit);
+        return sortOptions.order === 'desc' ? timeB - timeA : timeA - timeB;
+      }
+      
+      // Handle other field sorting
+      const valueA = a[sortOptions.field];
+      const valueB = b[sortOptions.field];
+      
+      if (typeof valueA === 'string' && typeof valueB === 'string') {
+        return sortOptions.order === 'desc' 
+          ? valueB.localeCompare(valueA) 
+          : valueA.localeCompare(valueB);
+      }
+      
+      // Default numeric comparison
+      return sortOptions.order === 'desc' ? valueB - valueA : valueA - valueB;
+    });
+    
+    return {
+      data: sortedResults.slice(0, limit),
+      totalItems: sortedResults.length
+    };
   } catch (error) {
     console.error('Error performing semantic search:', error);
     throw new Error('Failed to perform semantic search: ' + error.message);
