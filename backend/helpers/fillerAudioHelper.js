@@ -37,12 +37,39 @@ const EMOTION_TO_FILLER_MAP = {
   // Add more mappings as needed
 };
 
+// Add this at the top of the file after the EMOTION_TO_FILLER_MAP
+
+// Pre-load filler audio files into memory for faster access
+const PRELOADED_FILLERS = {};
+
+function preloadFillerAudio() {
+  // Get all unique filler files from the emotion map
+  const allFillers = new Set();
+  Object.values(EMOTION_TO_FILLER_MAP).forEach(fillers => {
+    fillers.forEach(filler => allFillers.add(filler));
+  });
+  
+  // Load each file into memory
+  allFillers.forEach(filler => {
+    const fillerPath = path.join(FILLERS_DIR, filler);
+    if (fs.existsSync(fillerPath)) {
+      PRELOADED_FILLERS[filler] = fs.readFileSync(fillerPath);
+      console.log(`Preloaded filler: ${filler}`);
+    }
+  });
+  console.log(`Preloaded ${Object.keys(PRELOADED_FILLERS).length} filler audio files`);
+}
+
+// Call this function during initialization
+preloadFillerAudio();
+
 /**
  * Get a filler audio file based on emotion and response length
  * @param {string} emotion - The detected emotion
  * @param {number} responseLength - Length of the expected response
  * @returns {Object} - Object containing audio buffer and format
  */
+// Update the getFillerAudio function to use preloaded files
 async function getFillerAudio(emotion = 'neutral', responseLength = 0) {
   try {
     // Determine which filler to use based on emotion and response length
@@ -53,9 +80,8 @@ async function getFillerAudio(emotion = 'neutral', responseLength = 0) {
       // Choose from longer thinking fillers
       const longThinkingFillers = ['lemme_check.mp3', 'just_a_sec.mp3', 'i_am_thinking.mp3', 'hold_on.mp3'];
       
-      // Filter to only include files that exist
-      const availableFillers = longThinkingFillers.filter(file => 
-        fs.existsSync(path.join(FILLERS_DIR, file)));
+      // Filter to only include files that are preloaded
+      const availableFillers = longThinkingFillers.filter(file => PRELOADED_FILLERS[file]);
       
       if (availableFillers.length > 0) {
         fillerOptions = availableFillers;
@@ -64,19 +90,12 @@ async function getFillerAudio(emotion = 'neutral', responseLength = 0) {
     
     // Randomly select a filler from the options
     const selectedFiller = fillerOptions[Math.floor(Math.random() * fillerOptions.length)];
-    const fillerPath = path.join(FILLERS_DIR, selectedFiller);
     
-    // Check if the file exists
-    if (!fs.existsSync(fillerPath)) {
-      console.warn(`Filler audio file not found: ${fillerPath}`);
-      return null;
-    }
-    
-    // Read the file and return the raw buffer
-    const audioBuffer = fs.readFileSync(fillerPath);
+    // Use preloaded buffer if available, otherwise read from disk
+    const audioBuffer = PRELOADED_FILLERS[selectedFiller] || fs.readFileSync(path.join(FILLERS_DIR, selectedFiller));
     
     return {
-      audioBuffer: audioBuffer, // Return the raw buffer instead of base64
+      audioBuffer: audioBuffer,
       format: 'mp3',
       fillerName: selectedFiller
     };

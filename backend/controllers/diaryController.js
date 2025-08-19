@@ -1,9 +1,7 @@
 const asyncHandler = require('express-async-handler');
 const admin = require('firebase-admin');
 const { returnResponse, verifyrequiredparams } = require('../middleware/common');
-
-// Get Firestore instance
-const db = admin.firestore();
+const { transcribeAudio } = require('../helpers/transcriptionHelper');
 
 /**
  * @desc    Delete diary entries for a user on a specific date
@@ -238,10 +236,72 @@ const getUserDiaryEntries = asyncHandler(async (req, res) => {
   }
 });
 
+/**
+ * @desc    Transcribe audio using OpenAI Whisper API
+ * @route   POST /api/diary/transcribe
+ * @access  Public
+ */
+const transcribeDiaryAudio = asyncHandler(async (req, res) => {
+  try {
+    // Set model directly in the function
+    const model = 'whisper-1';
+    
+    // Check if file exists in the request
+    if (!req.file) {
+      return res.status(400).json({
+        error: {
+          message: 'No file provided',
+          type: 'invalid_request_error',
+          code: 'no_file'
+        }
+      });
+    }
+    
+    // Define allowed audio MIME types
+    const allowedTypes = [
+      'audio/flac', 'audio/m4a', 'audio/mp3', 'audio/mp4', 'audio/mpeg',
+      'audio/mpga', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/x-wav', 'audio/x-m4a'
+    ];
+    
+    // Check file type
+    if (!allowedTypes.includes(req.file.mimetype)) {
+      return res.status(400).json({
+        error: {
+          message: `Unsupported file type: ${req.file.mimetype}`,
+          type: 'invalid_request_error',
+          code: 'unsupported_file_type'
+        }
+      });
+    }
+    
+    // Get file format from mimetype
+    const format = req.file.mimetype.split('/')[1];
+    
+    // Use the transcribeAudio helper function with the buffer directly
+    const transcription = await transcribeAudio(req.file.buffer, format);
+    
+    // Return the transcription in the format matching OpenAI's API
+    return res.status(200).json({
+      text: transcription
+    });
+    
+  } catch (error) {
+    console.error('Error transcribing audio:', error);
+    return res.status(500).json({
+      error: {
+        message: error.message || 'Failed to transcribe audio',
+        type: 'server_error',
+        code: 'internal_server_error'
+      }
+    });
+  }
+});
+
 module.exports = {
   createDiaryEntry,
   editDiaryEntry,
   getUserDiaryEntries,
   deleteDiaryEntry,
-  deleteDiaryEntriesByDate
+  deleteDiaryEntriesByDate,
+  transcribeDiaryAudio
 };

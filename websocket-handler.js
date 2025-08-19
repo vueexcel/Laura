@@ -376,10 +376,18 @@ Always return your response as a valid JSON object with two keys: response (your
               // Append the new chunk to our buffer
               audioBuffer = Buffer.concat([audioBuffer, chunk]);
               
-              // Process the buffer in fixed-size chunks of 200 bytes
-              while (audioBuffer.length >= 200) {
-                const chunkToSend = audioBuffer.slice(0, 200);
-                audioBuffer = audioBuffer.slice(200);
+              // Process the buffer with a minimum chunk size of 200 bytes
+              // This allows for larger chunks when available
+              const minChunkSize = 200;
+              while (audioBuffer.length >= minChunkSize) {
+                // Determine chunk size - use the entire buffer if it's less than twice the minimum size
+                // otherwise use half the buffer size (but at least minChunkSize)
+                const chunkSize = audioBuffer.length < minChunkSize * 2 ? 
+                                 audioBuffer.length : 
+                                 Math.max(minChunkSize, Math.floor(audioBuffer.length / 2));
+                
+                const chunkToSend = audioBuffer.slice(0, chunkSize);
+                audioBuffer = audioBuffer.slice(chunkSize);
                 
                 chunkCount++;
                 totalBytes += chunkToSend.length;
