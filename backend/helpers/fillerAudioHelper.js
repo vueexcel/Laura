@@ -41,7 +41,7 @@ const EMOTION_TO_FILLER_MAP = {
  * Get a filler audio file based on emotion and response length
  * @param {string} emotion - The detected emotion
  * @param {number} responseLength - Length of the expected response
- * @returns {Object} - Object containing base64 audio and format
+ * @returns {Object} - Object containing audio buffer and format
  */
 async function getFillerAudio(emotion = 'neutral', responseLength = 0) {
   try {
@@ -72,12 +72,11 @@ async function getFillerAudio(emotion = 'neutral', responseLength = 0) {
       return null;
     }
     
-    // Read the file and convert to base64
+    // Read the file and return the raw buffer
     const audioBuffer = fs.readFileSync(fillerPath);
-    const audioBase64 = audioBuffer.toString('base64');
     
     return {
-      audio: audioBase64,
+      audioBuffer: audioBuffer, // Return the raw buffer instead of base64
       format: 'mp3',
       fillerName: selectedFiller
     };

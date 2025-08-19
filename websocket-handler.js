@@ -58,6 +58,11 @@ async function handleUserMessage(ws, data, sessionData) {
       }
     } catch (error) {
       console.error('Error fetching chat summary:', error);
+      // Continue without chat summary - don't let this error stop the flow
+      if (error.code === 8 || (error.details && error.details.includes('Quota exceeded'))) {
+        console.warn('Firestore quota exceeded when fetching chat summary. Continuing without it.');
+      }
+      // No need to rethrow - we can proceed without the chat summary
     }
 
     // Prepare messages for OpenAI with NEW JSON system prompt
@@ -185,13 +190,16 @@ Always return your response as a valid JSON object with two keys: response (your
         const fillerAudio = await getFillerAudio(emotionTag, cleanResponse.length);
         
         if (fillerAudio) {
-          // Send filler audio to client
+          // Send filler audio header first
           ws.send(JSON.stringify({
             type: 'filler_audio',
-            audio: fillerAudio.audio,
             format: fillerAudio.format,
-            fillerName: fillerAudio.fillerName
+            fillerName: fillerAudio.fillerName,
+            chunkSize: fillerAudio.audioBuffer.length
           }));
+          
+          // Then send the raw binary audio data
+          ws.send(fillerAudio.audioBuffer);
           
           console.log(`Sent filler audio (${fillerAudio.fillerName}) for emotion: ${emotionTag}`);
         }
@@ -343,6 +351,7 @@ Always return your response as a valid JSON object with two keys: response (your
           // This avoids base64 conversion overhead and is more efficient
           let chunkCount = 0;
           let totalBytes = 0;
+          let audioBuffer = Buffer.alloc(0);
           
           // Set up error handling before starting stream processing
           const handleStreamError = (err) => {
@@ -364,27 +373,51 @@ Always return your response as a valid JSON object with two keys: response (your
           
           ttsResponse.data.on('data', (chunk) => {
             try {
-              chunkCount++;
-              totalBytes += chunk.length;
+              // Append the new chunk to our buffer
+              audioBuffer = Buffer.concat([audioBuffer, chunk]);
               
-              // First send a small JSON message to notify the client about the incoming binary chunk
-               ws.send(JSON.stringify({
-                 type: 'audio_chunk_header',
-                 chunkSize: chunk.length,
-                 format: 'mp3',
-                 emotion: emotionTag,
-                 chunkNumber: chunkCount
-               }));
-               
-               // Then send the actual binary chunk directly without base64 conversion
-               // This enables immediate playback as soon as chunks arrive
-               ws.send(chunk);
+              // Process the buffer in fixed-size chunks of 200 bytes
+              while (audioBuffer.length >= 200) {
+                const chunkToSend = audioBuffer.slice(0, 200);
+                audioBuffer = audioBuffer.slice(200);
+                
+                chunkCount++;
+                totalBytes += chunkToSend.length;
+                
+                // First send a small JSON message to notify the client about the incoming binary chunk
+                ws.send(JSON.stringify({
+                  type: 'audio_chunk_header',
+                  chunkSize: chunkToSend.length,
+                  format: 'mp3',
+                  emotion: emotionTag,
+                  chunkNumber: chunkCount
+                }));
+                
+                // Then send the actual binary chunk directly without base64 conversion
+                ws.send(chunkToSend);
+              }
             } catch (chunkError) {
               handleStreamError(chunkError);
             }
           });
           
           ttsResponse.data.on('end', () => {
+            // Send any remaining audio data that's less than 200 bytes
+            if (audioBuffer.length > 0) {
+              chunkCount++;
+              totalBytes += audioBuffer.length;
+              
+              ws.send(JSON.stringify({
+                type: 'audio_chunk_header',
+                chunkSize: audioBuffer.length,
+                format: 'mp3',
+                emotion: emotionTag,
+                chunkNumber: chunkCount
+              }));
+              
+              ws.send(audioBuffer);
+            }
+            
             // Signal that audio streaming is complete
             try {
               ws.send(JSON.stringify({
@@ -394,8 +427,7 @@ Always return your response as a valid JSON object with two keys: response (your
               console.log(`Streamed ${chunkCount} audio chunks (${totalBytes} bytes) in ${Date.now() - audioStartTime}ms`);
               
               // Now that audio streaming is complete, send the response_complete message
-              // Use a small timeout to ensure all audio chunks are processed
-              setTimeout(sendResponseComplete, 100); // Increased timeout to ensure all chunks are processed
+              setTimeout(sendResponseComplete, 100); // Ensure all chunks are processed
             } catch (error) {
               console.error(`Error sending audio_complete: ${error.message}`);
               sendResponseComplete(); // Still try to send response_complete
@@ -491,62 +523,83 @@ Always return your response as a valid JSON object with two keys: response (your
         // Save chat to Firestore
         const db = admin.firestore();
         
-        // Save to chat history collection
-        await db.collection('chatHistory').doc(chatId).set(chatEntry);
-        
-        // Update user's chat array
-        const userRef = db.collection('users').doc(userId);
-        const userDoc = await userRef.get();
-        
-        if (userDoc.exists) {
-          await userRef.update({
-            chatIds: admin.firestore.FieldValue.arrayUnion(chatId)
-          });
-        } else {
-          await userRef.set({
-            id: userId,
-            chatIds: [chatId],
-            emotionState: {
-              currentEmotion: emotionTag,
-              lastUpdated: new Date()
-            }
-          });
+        try {
+          // Save to chat history collection
+          await db.collection('chatHistory').doc(chatId).set(chatEntry);
+          console.log(`Saved chat entry to history for user ${userId}`);
+        } catch (historyError) {
+          console.error('Error saving chat history:', historyError);
+          // Continue with other operations
         }
         
-        // Update emotion state
-        await userRef.update({
-          'emotionState.currentEmotion': emotionTag,
-          'emotionState.lastUpdated': new Date()
-        });
-        
-        // Get updated chat history and generate summary
-        const chatHistoryResult = await getChatHistoryForUser(userId, 1); // Get the first page of chat history
-        const updatedChatHistory = chatHistoryResult.data; // Extract the data array from the result
-        
-        if (updatedChatHistory && updatedChatHistory.length > 0) {
-          const newChatSummary = await generateChatSummary(updatedChatHistory, userId);
-          const chatSummaryRef = db.collection('chatSummary').doc(userId);
-          const chatSummaryDoc = await chatSummaryRef.get();
+        try {
+          // Update user's chat array
+          const userRef = db.collection('users').doc(userId);
+          const userDoc = await userRef.get();
           
-          if (chatSummaryDoc.exists) {
-            await chatSummaryRef.update({
-              summary: newChatSummary,
-              lastUpdated: new Date().toISOString()
+          if (userDoc.exists) {
+            await userRef.update({
+              chatIds: admin.firestore.FieldValue.arrayUnion(chatId)
             });
           } else {
-            await chatSummaryRef.set({
-              userId: userId,
-              summary: newChatSummary,
-              lastUpdated: new Date().toISOString()
+            await userRef.set({
+              id: userId,
+              chatIds: [chatId],
+              emotionState: {
+                currentEmotion: emotionTag,
+                lastUpdated: new Date()
+              }
             });
           }
+          
+          // Update emotion state
+          await userRef.update({
+            'emotionState.currentEmotion': emotionTag,
+            'emotionState.lastUpdated': new Date()
+          });
+          console.log(`Updated user data for ${userId}`);
+        } catch (userError) {
+          console.error('Error updating user data:', userError);
+          // Continue with other operations
         }
         
-        console.log(`Successfully completed chat summary creation for user ${userId}`);
+        try {
+          // Get updated chat history and generate summary
+          const chatHistoryResult = await getChatHistoryForUser(userId, 1); // Get the first page of chat history
+          const updatedChatHistory = chatHistoryResult.data; // Extract the data array from the result
+          
+          if (updatedChatHistory && updatedChatHistory.length > 0) {
+            const newChatSummary = await generateChatSummary(updatedChatHistory, userId);
+            const chatSummaryRef = db.collection('chatSummary').doc(userId);
+            const chatSummaryDoc = await chatSummaryRef.get();
+            
+            if (chatSummaryDoc.exists) {
+              await chatSummaryRef.update({
+                summary: newChatSummary,
+                lastUpdated: new Date().toISOString()
+              });
+            } else {
+              await chatSummaryRef.set({
+                userId: userId,
+                summary: newChatSummary,
+                lastUpdated: new Date().toISOString()
+              });
+            }
+          }
+          console.log(`Successfully completed chat summary creation for user ${userId}`);
+        } catch (summaryError) {
+          console.error('Error generating or saving chat summary:', summaryError);
+          // This is non-critical, so we can continue
+        }
       } catch (error) {
         console.error('Error in post-response operations:', error);
+        // Don't let this error affect the WebSocket connection
+        // The user has already received their response
       }
-    })();
+    })().catch(err => {
+      // Add an additional catch to ensure any promise rejection doesn't crash the app
+      console.error('Unhandled error in post-response operations:', err);
+    });
 
     // We now handle the response_complete message through the sendResponseComplete function
     // which ensures it's only sent once and after text streaming is complete
