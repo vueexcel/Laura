@@ -2,7 +2,7 @@ const asyncHandler = require('express-async-handler');
 const admin = require('firebase-admin');
 const { returnResponse, verifyrequiredparams } = require('../middleware/common');
 const { transcribeAudio } = require('../helpers/transcriptionHelper');
-
+const db = admin.firestore();
 /**
  * @desc    Delete diary entries for a user on a specific date
  * @route   DELETE /api/diary/deleteByDate/:userId/:date

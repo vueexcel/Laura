@@ -3,15 +3,23 @@ const path = require('path');
 require('dotenv').config();
 const { OpenAI } = require('openai');
 
-// Initialize Firebase Admin SDK with service account
-const serviceAccount = require(path.join(__dirname, '../../laura-b7cb2-firebase-adminsdk-fbsvc-6d6395e624.json'));
-
-// Check if Firebase is already initialized
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
+// Force delete existing apps
+if (admin.apps.length) {
+  admin.apps.forEach(app => {
+    if (app) {
+      app.delete().catch(console.error);
+    }
   });
 }
+
+// Use JSON file directly - no env variables
+const serviceAccount = require(path.join(__dirname, '../../laura-b7cb2-firebase-adminsdk-fbsvc-c5488ba181.json'));
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+
 
 // Get Firestore instance
 const db = admin.firestore();
