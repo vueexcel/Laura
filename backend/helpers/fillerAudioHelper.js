@@ -4,37 +4,53 @@ const path = require('path');
 // Define the directory where filler audio files are stored
 const FILLERS_DIR = path.join(__dirname, '..', 'cache', 'fillers');
 
-// Map of emotion tags to appropriate filler sounds
+// Categorize fillers by their general purpose/type
+const FILLER_CATEGORIES = {
+  thinking: ['thinking.mp3', 'hmm.mp3', 'umm.mp3'],
+  processing: ['i_am_thinking.mp3', 'just_a_sec.mp3', 'lemme_check.mp3', 'hold_on.mp3'],
+  emotional: ['smile.mp3', 'blush.mp3', 'sigh.mp3', 'relief.mp3'],
+  reactive: ['gasp.mp3', 'ahhh.mp3', 'ugh.mp3', 'cough.mp3'],
+  expressive: ['chuckling.mp3', 'long_laugh.mp3', 'clap.mp3'],
+  transitional: ['clear_throt_one.mp3', 'clear_throt_two.mp3', 'clear_throt_three.mp3', 'throt_clear.mp3']
+};
+
+// Map of emotion tags to filler categories with weights
 const EMOTION_TO_FILLER_MAP = {
-  // Default fillers
-  'default': ['thinking.mp3', 'umm.mp3', 'hmm.mp3', 'i_am_thinking.mp3'],
+  // Default balanced distribution
+  'default': {
+    thinking: 0.3,
+    processing: 0.3,
+    emotional: 0.2,
+    reactive: 0.1,
+    expressive: 0.05,
+    transitional: 0.05
+  },
   
-  // Emotion-specific fillers
-  'neutral': ['thinking.mp3', 'umm.mp3', 'i_am_thinking.mp3'],
-  'happy': ['hmm.mp3', 'umm.mp3', 'smile.mp3', 'chuckling.mp3'],
-  'sad': ['hmm.mp3', 'umm.mp3', 'sigh.mp3'],
-  'angry': ['hmm.mp3', 'clear_throt_one.mp3', 'clear_throt_two.mp3', 'clear_throt_three.mp3'],
-  'surprised': ['hmm.mp3', 'umm.mp3', 'gasp.mp3'],
-  'fearful': ['umm.mp3', 'ahhh.mp3'],
-  'disgusted': ['hmm.mp3', 'ugh.mp3'],
-  'thinking': ['thinking.mp3', 'hmm.mp3', 'umm.mp3', 'i_am_thinking.mp3'],
-  'mellow': ['hmm.mp3', 'sigh.mp3'],
-  'anxious': ['umm.mp3', 'cough.mp3'],
-  'overlyexcited': ['hmm.mp3', 'clap.mp3', 'gasp.mp3'],
-  'Playful/cheeky': ['hmm.mp3', 'chuckling.mp3', 'smile.mp3'],
-  'serious': ['hmm.mp3', 'thinking.mp3', 'throt_clear.mp3'],
-  'Flirty': ['hmm.mp3', 'blush.mp3', 'smile.mp3'],
-  'melancholic': ['sigh.mp3', 'umm.mp3'],
-  'confident': ['throt_clear.mp3', 'hmm.mp3'],
-  'wistful': ['sigh.mp3', 'hmm.mp3'],
-  'gentle': ['hmm.mp3', 'smile.mp3'],
-  'affectionate': ['smile.mp3', 'blush.mp3'],
-  'chaotic': ['ahhh.mp3', 'gasp.mp3'],
-  'tired': ['yawn.mp3', 'sigh.mp3'],
-  'relieved': ['relief.mp3', 'sigh.mp3'],
-  'laughing': ['chuckling.mp3', 'long_laugh.mp3'],
-  
-  // Add more mappings as needed
+  // Emotion-specific distributions
+  'neutral': {
+    thinking: 0.4,
+    processing: 0.3,
+    transitional: 0.2,
+    emotional: 0.1
+  },
+  'happy': {
+    expressive: 0.4,
+    emotional: 0.3,
+    thinking: 0.2,
+    reactive: 0.1
+  },
+  'sad': {
+    emotional: 0.4,
+    thinking: 0.3,
+    processing: 0.2,
+    transitional: 0.1
+  },
+  'thinking': {
+    thinking: 0.5,
+    processing: 0.3,
+    transitional: 0.2
+  }
+  // Other emotions will use the default distribution
 };
 
 // Add this at the top of the file after the EMOTION_TO_FILLER_MAP
@@ -43,9 +59,9 @@ const EMOTION_TO_FILLER_MAP = {
 const PRELOADED_FILLERS = {};
 
 function preloadFillerAudio() {
-  // Get all unique filler files from the emotion map
+  // Get all unique filler files from the categories
   const allFillers = new Set();
-  Object.values(EMOTION_TO_FILLER_MAP).forEach(fillers => {
+  Object.values(FILLER_CATEGORIES).forEach(fillers => {
     fillers.forEach(filler => allFillers.add(filler));
   });
   
@@ -72,32 +88,65 @@ preloadFillerAudio();
 // Update the getFillerAudio function to use preloaded files
 async function getFillerAudio(emotion = 'neutral', responseLength = 0) {
   try {
-    // Determine which filler to use based on emotion and response length
-    let fillerOptions = EMOTION_TO_FILLER_MAP[emotion] || EMOTION_TO_FILLER_MAP['default'];
+    // Get the distribution for the emotion, or use default if not found
+    const distribution = EMOTION_TO_FILLER_MAP[emotion] || EMOTION_TO_FILLER_MAP['default'];
     
-    // For longer responses, prefer "let me check" or "just a sec" type fillers
+    // Adjust distribution based on response length
+    let adjustedDistribution = { ...distribution };
     if (responseLength > 200) {
-      // Choose from longer thinking fillers
-      const longThinkingFillers = ['lemme_check.mp3', 'just_a_sec.mp3', 'i_am_thinking.mp3', 'hold_on.mp3'];
-      
-      // Filter to only include files that are preloaded
-      const availableFillers = longThinkingFillers.filter(file => PRELOADED_FILLERS[file]);
-      
-      if (availableFillers.length > 0) {
-        fillerOptions = availableFillers;
+      // Increase probability of processing fillers for longer responses
+      adjustedDistribution.processing = (adjustedDistribution.processing || 0) + 0.3;
+      // Normalize other probabilities
+      const total = Object.values(adjustedDistribution).reduce((a, b) => a + b, 0);
+      Object.keys(adjustedDistribution).forEach(key => {
+        if (key !== 'processing') {
+          adjustedDistribution[key] = (adjustedDistribution[key] || 0) * (0.7 / (total - adjustedDistribution.processing));
+        }
+      });
+    }
+
+    // Select a category based on weighted distribution
+    const random = Math.random();
+    let accumulator = 0;
+    let selectedCategory = 'thinking'; // default fallback
+    
+    for (const [category, weight] of Object.entries(adjustedDistribution)) {
+      accumulator += weight;
+      if (random <= accumulator) {
+        selectedCategory = category;
+        break;
       }
     }
-    
-    // Randomly select a filler from the options
-    const selectedFiller = fillerOptions[Math.floor(Math.random() * fillerOptions.length)];
-    
+
+    // Get available fillers for the selected category
+    const categoryFillers = FILLER_CATEGORIES[selectedCategory] || FILLER_CATEGORIES.thinking;
+    const availableFillers = categoryFillers.filter(file => PRELOADED_FILLERS[file]);
+
+    // Add some randomness to prevent repetition
+    const lastUsedTime = getFillerAudio.lastUsed || {};
+    const currentTime = Date.now();
+    const availableNonRepeating = availableFillers.filter(file => {
+      const timeSinceLastUse = currentTime - (lastUsedTime[file] || 0);
+      return timeSinceLastUse > 5000; // Don't repeat within 5 seconds
+    });
+
+    // Select a filler, preferring non-repeating ones
+    const selectedFiller = availableNonRepeating.length > 0 
+      ? availableNonRepeating[Math.floor(Math.random() * availableNonRepeating.length)]
+      : availableFillers[Math.floor(Math.random() * availableFillers.length)];
+
+    // Update last used time
+    getFillerAudio.lastUsed = getFillerAudio.lastUsed || {};
+    getFillerAudio.lastUsed[selectedFiller] = currentTime;
+
     // Use preloaded buffer if available, otherwise read from disk
     const audioBuffer = PRELOADED_FILLERS[selectedFiller] || fs.readFileSync(path.join(FILLERS_DIR, selectedFiller));
     
     return {
       audioBuffer: audioBuffer,
       format: 'mp3',
-      fillerName: selectedFiller
+      fillerName: selectedFiller,
+      category: selectedCategory
     };
   } catch (error) {
     console.error('Error getting filler audio:', error);

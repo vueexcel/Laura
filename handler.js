@@ -22,7 +22,14 @@ const server = http.createServer(app);
 const moment = require('moment-timezone');
 // Firestore is initialized in firestoreHelper.js
 const date = moment().format('YYYY-MM-DD')
-const accessLogStream = fs.createWriteStream(path.join(__dirname + '/backend/logs/', `access_${date}.log`), { flags: 'a' })
+const logDir = path.join(__dirname, 'backend', 'logs');
+
+// Ensure logs directory exists
+if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+}
+
+const accessLogStream = fs.createWriteStream(path.join(logDir, `access_${date}.log`), { flags: 'a' })
 
 
 app.use(express.json())
@@ -41,11 +48,6 @@ app.use('/api/transcription', cors(), require('./backend/routes/transcriptionRou
 app.use('/api/response', cors(), require('./backend/routes/responseRoutes'));
 app.use('/api/voice', cors(), require('./backend/routes/voiceRoutes'));
 app.use('/api/diary', cors(), require('./backend/routes/diaryRoutes'));
-
-// Add WebSocket client route
-app.get('/api/response/websocket-client', (req, res) => {
-  res.sendFile(path.join(__dirname, 'websocket-client.html'));
-});
 
 app.use(errorHandler);
 app.use((req, res, next) => {

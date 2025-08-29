@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ElevenLabs Conversational AI Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .status-container {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 14px;
+        }
+        .status.disconnected {
+            background-color: #ff4444;
+            color: white;
+        }
+        .status.silent {
+            background-color: #f0f0f0;
+        }
+        .chat-container {
+            border: 1px solid #ccc;
+            border-radius: 10px;
+            height: 400px;
+            padding: 20px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            background-color: #f9f9f9;
+        }
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 8px;
+            max-width: 70%;
+        }
+        .user-message {
+            background-color: #007bff;
+            color: white;
+            margin-left: auto;
+        }
+        .assistant-message {
+            background-color: white;
+            border: 1px solid #ddd;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .start-btn {
+            background-color: #00c853;
+            color: white;
+        }
+        .end-btn {
+            background-color: #ffcdd2;
+            color: black;
+        }
+        #recordButton {
+            background-color: #ff4444;
+            color: white;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 20px auto;
+        }
+        #recordButton.recording {
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+        .audio-visualizer {
+            height: 50px;
+            background-color: #f0f0f0;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>ElevenLabs Conversational AI Demo</h1>
+    </div>
+
+    <div class="status-container">
+        <div class="status disconnected" id="connectionStatus">Disconnected</div>
+        <div class="status silent" id="agentStatus">Agent Silent</div>
+    </div>
+
+    <div class="chat-container" id="chatContainer"></div>
+
+    <div class="controls">
+        <button class="start-btn" id="startConversation">Start Conversation</button>
+        <button class="end-btn" id="endConversation">End Conversation</button>
+    </div>
+
+    <button id="recordButton">🎤</button>
+    <div class="audio-visualizer" id="visualizer"></div>
+
+    <script>
+        let ws;
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+        let audioContext;
+        let currentResponseChunks = []; // Store chunks for current response
+        let isPlaying = false;
+        let firstChunkTime = null; // Track time of first chunk
+        let responseStartTime = null; // Track when the response started
+
+        // Initialize WebSocket connection
+        function connectWebSocket() {
+            ws = new WebSocket('ws://localhost:8001');
+            
+            ws.onopen = () => {
+                document.getElementById('connectionStatus').textContent = 'Connected';
+                document.getElementById('connectionStatus').style.backgroundColor = '#00c853';
+            };
+            
+            ws.onclose = () => {
+                document.getElementById('connectionStatus').textContent = 'Disconnected';
+                document.getElementById('connectionStatus').style.backgroundColor = '#ff4444';
+            };
+
+            ws.onmessage = handleWebSocketMessage;
+        }
+
+        // Handle incoming WebSocket messages
+        async function handleWebSocketMessage(event) {
+            console.log('Received WebSocket message:', event.data instanceof Blob ? 'Binary Data' : event.data);
+            
+            // Check if the message is binary data
+            if (event.data instanceof Blob) {
+                console.log('Processing binary chunk of size:', event.data.size);
+                handleAudioChunk(event.data);
+                return;
+            }
+
+            try {
+                const data = JSON.parse(event.data);
+                console.log('Parsed message type:', data.type);
+                
+                switch (data.type) {
+                    case 'start_conversation':
+                        console.log('Conversation started with userId:', data.userId);
+                        break;
+                        
+                    case 'audio_chunk_header':
+                        console.log('Audio chunk header received:', {
+                            chunkSize: data.chunkSize,
+                            format: data.format,
+                            emotion: data.emotion
+                        });
+                        // Next message should be binary audio data
+                        break;
+                        
+                    case 'text_chunk':
+                        console.log('Text chunk received:', data.text);
+                        appendMessage(data.text, 'assistant');
+                        break;
+                        
+                    case 'thinking_status':
+                        console.log('Thinking status:', data.isThinking);
+                        document.getElementById('agentStatus').textContent = data.isThinking ? 'Thinking...' : 'Agent Silent';
+                        if (data.isThinking) {
+                            responseStartTime = Date.now(); // Mark the start of response generation
+                            firstChunkTime = null; // Reset first chunk time
+                        }
+                        break;
+                        
+                    case 'transcription':
+                        console.log('Transcription received:', data.text);
+                        appendMessage(data.text, 'user');
+                        break;
+
+                    case 'error':
+                        console.error('Server error:', data.message);
+                        break;
+
+                    case 'filler_audio':
+                        console.log('Filler audio header received:', {
+                            format: data.format,
+                            fillerName: data.fillerName,
+                            chunkSize: data.chunkSize
+                        });
+                        break;
+
+                    case 'response_complete':
+                        console.log('Response complete:', {
+                            emotion: data.emotion,
+                            responseMode: data.responseMode,
+                            mode: data.mode
+                        });
+                        
+                        // Play the complete audio response
+                        if (currentResponseChunks.length > 0) {
+                            playCompleteAudio(currentResponseChunks);
+                            currentResponseChunks = []; // Reset for next response
+                        }
+                        document.getElementById('agentStatus').textContent = 'Agent Silent';
+                        break;
+
+                    default:
+                        console.log('Unknown message type:', data.type);
+                        break;
+                }
+            } catch (error) {
+                console.error('Error parsing message:', error, '\nRaw data:', event.data);
+            }
+        }
+
+        // Wait for binary message (audio chunk)
+        function waitForBinaryMessage() {
+            return new Promise((resolve) => {
+                const originalOnMessage = ws.onmessage;
+                ws.onmessage = (event) => {
+                    ws.onmessage = originalOnMessage;
+                    resolve(event.data);
+                };
+            });
+        }
+
+        // Handle audio chunk
+        function handleAudioChunk(chunk) {
+            console.log('Processing audio chunk of size:', chunk.size);
+            if (currentResponseChunks.length === 0) {
+                // This is the first chunk
+                firstChunkTime = Date.now();
+                responseStartTime = responseStartTime || firstChunkTime; // Set response start time if not set
+                console.log(`First chunk received at: ${new Date(firstChunkTime).toISOString()}`);
+            }
+            currentResponseChunks.push(chunk);
+        }
+
+        // Play complete audio response
+        function playCompleteAudio(chunks) {
+            if (chunks.length === 0) {
+                console.log('No audio chunks to play');
+                return;
+            }
+            
+            const responseEndTime = Date.now();
+            const firstChunkLatency = firstChunkTime - responseStartTime;
+            const totalResponseTime = responseEndTime - responseStartTime;
+            
+            console.log(`Duration first chunk: ${firstChunkLatency}ms, response complete: ${totalResponseTime}ms`);
+            firstChunkTime = null; // Reset for next response
+            responseStartTime = null;
+
+            console.log('Combining', chunks.length, 'audio chunks');
+            
+            // Combine all chunks into a single Blob
+            const completeAudioBlob = new Blob(chunks, { type: 'audio/mpeg' });
+            console.log('Created complete audio blob of size:', completeAudioBlob.size);
+            
+            const audioUrl = URL.createObjectURL(completeAudioBlob);
+            const audio = new Audio();
+            
+            audio.onerror = (e) => {
+                console.error('Audio playback error:', e);
+                console.error('Audio error details:', {
+                    error: audio.error,
+                    networkState: audio.networkState,
+                    readyState: audio.readyState
+                });
+                URL.revokeObjectURL(audioUrl);
+            };
+
+            audio.oncanplaythrough = () => {
+                console.log('Complete audio ready to play, duration:', audio.duration);
+                audio.play().catch(error => {
+                    console.error('Playback error:', error);
+                });
+            };
+
+            audio.onended = () => {
+                console.log('Audio playback complete');
+                URL.revokeObjectURL(audioUrl);
+            };
+
+            audio.onloadedmetadata = () => {
+                console.log('Audio metadata loaded:', {
+                    duration: audio.duration,
+                    readyState: audio.readyState
+                });
+            };
+
+            // Try to play with different MIME types if needed
+            audio.onerror = () => {
+                console.log('Trying alternative MIME type');
+                const alternativeBlob = new Blob(chunks, { type: 'audio/mp3;codecs=mp3' });
+                const alternativeUrl = URL.createObjectURL(alternativeBlob);
+                URL.revokeObjectURL(audioUrl);
+                audio.src = alternativeUrl;
+            };
+
+            audio.preload = 'auto';
+            audio.src = audioUrl;
+        }
+
+        // Append message to chat container
+        function appendMessage(text, sender) {
+            const chatContainer = document.getElementById('chatContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${sender}-message`;
+            messageDiv.textContent = text;
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // Initialize audio recording
+        async function initializeAudioRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    // Check WebSocket connection first
+                    if (!ws || ws.readyState !== WebSocket.OPEN) {
+                        console.error('WebSocket is not connected');
+                        alert('Not connected to server. Please click "Start Conversation" first.');
+                        audioChunks = [];
+                        return;
+                    }
+
+                    try {
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                        const reader = new FileReader();
+                        
+                        reader.onloadend = () => {
+                            try {
+                                const base64Audio = reader.result.split(',')[1];
+                                const message = {
+                                    type: 'audio_message',
+                                    userId: 'test_user_id',
+                                    audio: base64Audio,
+                                    format: 'webm',
+                                    responseMode: 'audio',
+                                    mode: 'advice'
+                                };
+                                if (ws && ws.readyState === WebSocket.OPEN) {
+                                    ws.send(JSON.stringify(message));
+                                } else {
+                                    throw new Error('WebSocket is not connected');
+                                }
+                            } catch (error) {
+                                console.error('Error sending audio message:', error);
+                                alert('Failed to send audio message. Please check your connection.');
+                            }
+                        };
+
+                        reader.onerror = (error) => {
+                            console.error('Error reading audio file:', error);
+                            alert('Failed to process audio recording.');
+                        };
+
+                        reader.readAsDataURL(audioBlob);
+                        audioChunks = [];
+                    } catch (error) {
+                        console.error('Error processing audio:', error);
+                        alert('Failed to process audio recording.');
+                        audioChunks = [];
+                    }
+                };
+
+            } catch (error) {
+                console.error('Error initializing audio recording:', error);
+                alert('Could not initialize audio recording. Please check your microphone permissions.');
+            }
+        }
+
+        // Event Listeners
+        document.getElementById('startConversation').addEventListener('click', () => {
+            connectWebSocket();
+        });
+
+        document.getElementById('endConversation').addEventListener('click', () => {
+            if (ws) {
+                ws.close();
+            }
+        });
+
+        document.getElementById('recordButton').addEventListener('click', () => {
+            if (!isRecording) {
+                mediaRecorder.start();
+                isRecording = true;
+                document.getElementById('recordButton').classList.add('recording');
+            } else {
+                mediaRecorder.stop();
+                isRecording = false;
+                document.getElementById('recordButton').classList.remove('recording');
+            }
+        });
+
+        // Initialize audio recording on page load
+        initializeAudioRecording();
+    </script>
+</body>
+</html>

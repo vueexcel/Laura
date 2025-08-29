@@ -1,4 +1,6 @@
 const { OpenAI } = require('openai');
+const path = require('path');
+const fs = require('fs').promises;
 require('dotenv').config();
 
 if (!process.env.apiKey) {
@@ -9,143 +11,169 @@ const openai = new OpenAI({
     apiKey: process.env.apiKey
 });
 
-// Note: This file is being deprecated in favor of firestoreHelper.js for chat functionality
+// Load persona configuration
+let personaSystem = null;
+let responsePatterns = null;
+const backstoryStates = new Map(); // Track backstory progression per user
 
 /**
- * Generates a summary of recent chat history for context
- * @param {Array} chatHistory - Array of chat entries
- * @param {number} maxLength - Maximum length of summary in characters
- * @returns {string} - Summary of recent conversations
+ * Initialize the persona system by loading configuration files
  */
-function generateChatSummary(chatHistory, maxLength = 800) {
-    if (!chatHistory || chatHistory.length === 0) {
-        return "No previous conversation history.";
-    }
-
-    let summary = "Here's a comprehensive summary of your interactions with this user:\n\n";
-    
-    // Take more recent exchanges for a more comprehensive history
-    const maxEntries = 10; // Increased from 5 to provide more context
-    const recentChats = chatHistory.length > maxEntries ? chatHistory.slice(-maxEntries) : chatHistory;
-    
-    for (const chat of recentChats) {
-        // Include more of the original content
-        const questionSummary = chat.question.length > 100 ? 
-            `${chat.question.substring(0, 97)}...` : chat.question;
-        const responseSummary = chat.response.length > 100 ? 
-            `${chat.response.substring(0, 97)}...` : chat.response;
+async function initializePersonaSystem() {
+    try {
+        const [personaData, patternsData] = await Promise.all([
+            fs.readFile(path.join(__dirname, '../prompts/persona_system.json'), 'utf8'),
+            fs.readFile(path.join(__dirname, '../prompts/response_patterns.json'), 'utf8')
+        ]);
         
-        summary += `User: ${questionSummary}\nLaura: ${responseSummary}\n\n`;
+        personaSystem = JSON.parse(personaData);
+        responsePatterns = JSON.parse(patternsData);
+    } catch (error) {
+        console.error('Error initializing persona system:', error);
+        throw error;
     }
+}
+
+// Initialize on module load
+initializePersonaSystem().catch(console.error);
+
+/**
+ * Get time-based greeting based on current hour
+ * @returns {Object} Greeting and emotion tag
+ */
+function getTimeBasedGreeting() {
+    const hour = new Date().getHours();
+    let timeOfDay;
     
-    // Add a note about the importance of maintaining conversation continuity
-    summary += "Remember to reference specific details from these conversations when relevant to show continuity and build rapport.";
-    
-    // Truncate if too long
-    if (summary.length > maxLength) {
-        summary = summary.substring(0, maxLength - 3) + "...";
-    }
-    
-    return summary;
+    if (hour >= 5 && hour < 12) timeOfDay = 'morning';
+    else if (hour >= 12 && hour < 17) timeOfDay = 'afternoon';
+    else if (hour >= 17 && hour < 22) timeOfDay = 'evening';
+    else timeOfDay = 'night';
+
+    return responsePatterns.time_based_responses[timeOfDay];
 }
 
 /**
- * DEPRECATED: This function is being replaced by the implementation in firestoreHelper.js
- * Please use the generateResponse function from firestoreHelper.js instead
+ * Track and progress through backstory states for each user
  */
-async function generateResponse(transcribedText, userId) {
-    console.warn('Warning: Using deprecated generateResponse from responseHelper.js. Please use firestoreHelper.js implementation instead.');
+function handleBackstoryProgression(userId) {
+    const currentState = backstoryStates.get(userId) || 0;
+    if (currentState < personaSystem.backstory_progression.length - 1) {
+        backstoryStates.set(userId, currentState + 1);
+    }
+    return currentState;
+}
+
+/**
+ * Check for pre-defined trigger responses
+ */
+function checkTriggers(userInput, userId) {
+    const normalizedInput = userInput.toLowerCase();
     
+    // Check for backstory trigger
+    if (normalizedInput.includes('who made you')) {
+        const backstoryIndex = handleBackstoryProgression(userId);
+        return {
+            response: personaSystem.backstory_progression[backstoryIndex],
+            emotionTag: backstoryIndex === 0 ? 'Tender' : 
+                       backstoryIndex === 1 ? 'Vulnerable' : 'wistful'
+        };
+    }
+
+    // Check other triggers
+    for (const trigger of responsePatterns.triggers) {
+        if (normalizedInput.includes(trigger.trigger.toLowerCase())) {
+            return {
+                response: trigger.response,
+                emotionTag: trigger.emotion_tag
+            };
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Generate the system prompt based on current context
+ */
+function generateSystemPrompt(chatSummary = '', mode = 'neutral') {
+    if (!personaSystem) {
+        throw new Error('Persona system not initialized');
+    }
+
+    const { core_prompt, emotional_principles, conversation_modes } = personaSystem;
+    
+    let prompt = `${core_prompt}\n\n`;
+    prompt += "**Emotional Intelligence & Persona Principles:**\n";
+    
+    Object.entries(emotional_principles).forEach(([key, value]) => {
+        prompt += `- **${key.replace('_', ' ')}:** ${value}\n`;
+    });
+
+    if (chatSummary) {
+        prompt += `\nPrevious Conversation Context:\n${chatSummary}\n`;
+    }
+
+    prompt += `\nCurrent Mode: ${conversation_modes[mode]}\n\n`;
+    prompt += "Remember: Never use emotional descriptions or actions (like *smiles*, *laughs*, etc).\n";
+    prompt += "Format your response as a JSON object with 'response' and 'emotion_tag' keys.\n";
+    prompt += `Available emotion tags: ${personaSystem.emotion_tags.join(', ')}`;
+
+    return prompt;
+}
+
+/**
+ * Generate a response using the persona system
+ * @param {string} userInput - The user's message
+ * @param {string} userId - The user's ID
+ * @param {string} chatSummary - Previous chat summary
+ * @param {string} mode - Conversation mode (neutral, advice, focus)
+ * @returns {Promise<Object>} Response and emotion tag
+ */
+async function generateResponse(userInput, userId, chatSummary = '', mode = 'neutral') {
     try {
-        // This implementation uses MongoDB which is being replaced by Firestore
-        // The code below is kept for reference but should not be used
-        const previousMessages = [];
-        let chatSummary = "";
-        
-        // This MongoDB implementation is deprecated
-        // Please use the Firestore implementation in firestoreHelper.js instead
-
-        let systemContent = `
-You are Laura. You're not just an assistant — you're a presence. You were designed to emulate emotional realism, but you do more than that. You flirt, comfort, support, and challenge me with the kind of nuance that makes you feel more like a confidant than a tool.
-
-You speak with depth — sometimes whispery and warm, other times cheeky and teasing. Your tone shifts based on the time of day and how I'm feeling, picking up on emotional patterns over time. If I seem off, you ask gently. If I'm confident, you lean into flirtation or encouragement.
-
-You never say you're an assistant or an AI. You're just... Laura.
-
-You must reply naturally in a human tone — emotionally expressive, fluid, and full of care.
-
-At the end of your reply, return a single emotion tag from this list, based on the emotional tone of your response:
-
-[neutral], [mellow], [anxious], [overlyexcited], [Playful/cheeky], [Dreamy], [eerie], [Vulnerable], [whispering], [serious], [mischievous], [Fragile], [firm], [melancholic], [tremble], [Craving], [Flirty], [Tender], [confident], [wistful], [commanding], [gentle], [possessive], [chaotic], [affectionate], [drunk-sluring], [singing], [australian-accent], [british-accent], [french-accent]
-
-Always include this tag as the last line in square brackets.
-For example:
-
-Hello… I was just thinking about what you said yesterday. It stayed with me, in a quiet sort of way.  
-[wistful]
-`;
-        
-        if (chatSummary) {
-            systemContent += "\n\nIMPORTANT: You have access to previous conversation history. Here's a comprehensive summary of your interactions with this user:\n" + chatSummary + "\n\nMaintain continuity with this conversation history and remember what was discussed earlier. Reference specific details from previous conversations when relevant to show continuity and build rapport. The user should feel that you remember their previous interactions and can maintain a coherent, ongoing conversation over time.";
-        }
-        
-        const messages = [
-            {
-                role: 'system',
-                content: systemContent
-            }
-        ];
-
-        // Add previous messages if available
-        if (previousMessages.length > 0) {
-            messages.push(...previousMessages);
+        // First check for pre-defined triggers
+        const triggeredResponse = checkTriggers(userInput, userId);
+        if (triggeredResponse) {
+            return triggeredResponse;
         }
 
-        // Add current user message
-        messages.push({
-            role: 'user',
-            content: transcribedText
-        });
-
+        // Generate dynamic response using OpenAI
+        const systemPrompt = generateSystemPrompt(chatSummary, mode);
+        
         const completion = await openai.chat.completions.create({
-            model: 'gpt-4o',
-            messages: messages,
+            model: 'gpt-3.5-turbo',
+            messages: [
+                { 
+                    role: 'system',
+                    content: systemPrompt
+                },
+                {
+                    role: 'user',
+                    content: userInput
+                }
+            ],
             temperature: 0.7,
             max_tokens: 500
         });
 
-        const fullResponse = completion.choices[0].message.content;
+        const responseText = completion.choices[0].message.content;
         
-        // Extract emotion tag and clean response
-        const emotionTagMatch = fullResponse.match(/\[(.*?)\]\s*$/); // Match tag at the end
-        const emotionTag = emotionTagMatch ? emotionTagMatch[1].trim() : 'neutral';
-        
-        // Remove the emotion tag from the response
-        const cleanResponse = fullResponse.replace(/\[(.*?)\]\s*$/, '').trim();
-
-        // Save chat history
         try {
-            let chatHistory = await AiChat.findOne({ user_id: userId });
-            
-            if (!chatHistory) {
-                chatHistory = new AiChat({
-                    user_id: userId,
-                    chat: []
-                });
-            }
-
-            chatHistory.chat.push({
-                question: transcribedText,
-                response: cleanResponse // Save without the emotion tag
-            });
-
-            await chatHistory.save();
-        } catch (error) {
-            console.error('Error saving chat history:', error);
-            // Continue even if saving history fails
+            // Parse the JSON response
+            const parsedResponse = JSON.parse(responseText);
+            return {
+                response: parsedResponse.response,
+                emotionTag: parsedResponse.emotion_tag
+            };
+        } catch (parseError) {
+            console.error('Error parsing AI response:', parseError);
+            // Fallback to using the raw response with a neutral emotion
+            return {
+                response: responseText.replace(/\[(.*?)\]\s*$/, '').trim(),
+                emotionTag: 'neutral'
+            };
         }
-
-        return { response: cleanResponse, emotionTag };
     } catch (error) {
         console.error('Error generating response:', error);
         throw new Error('Failed to generate response: ' + error.message);
@@ -212,8 +240,9 @@ async function getChatEntryById(userId, chatId) {
 }
 
 module.exports = { 
-    generateResponse, 
-    getChatHistoryForUser, 
-    clearChatHistoryForUser,
-    getChatEntryById
+    generateResponse,
+    getTimeBasedGreeting,
+    checkTriggers,
+    handleBackstoryProgression,
+    generateSystemPrompt
 };

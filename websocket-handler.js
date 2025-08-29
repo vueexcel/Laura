@@ -5,16 +5,11 @@ const { transcribeAudio } = require('./backend/helpers/transcriptionHelper');
 const { textToSpeech, getVoiceIdFromEmotionTag } = require('./backend/helpers/audioHelper');
 const { updateUserBehaviorTracking, getChatHistoryForUser, generateChatSummary } = require('./backend/helpers/firestoreHelper');
 const { getFillerAudio, ensureFillerFilesExist } = require('./backend/helpers/fillerAudioHelper');
+const responseHelper = require('./backend/helpers/responseHelper');
 const admin = require('firebase-admin');
-const { OpenAI } = require('openai');
 
 // Ensure filler audio files exist
 ensureFillerFilesExist();
-
-// Initialize OpenAI
-const openai = new OpenAI({
-  apiKey: process.env.apiKey // Use the apiKey from .env file directly
-});
 
 // In-memory session state management
 const userSessions = new Map();
@@ -23,12 +18,18 @@ const userSessions = new Map();
 let activeResponseGenerations = new Map();
 // Generate unique ID for chat entry
 const chatId = Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9);
+const { generateOptimizedResponse } = require('./backend/helpers/optimizedResponseHelper');
+
 // Handle user text messages
 async function handleUserMessage(ws, data, sessionData) {
       const { userId, message, responseMode, mode } = data;
+      const startTime = Date.now();
       
       // Generate unique ID for this specific chat entry
       const chatId = Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9);
+      
+      // Skip all database operations for testing
+      const skipDatabaseOps = true;
   
   // Store response mode in session data (default to 'both' if not specified)
   sessionData.responseMode = responseMode || sessionData.responseMode || 'both';
@@ -43,33 +44,32 @@ async function handleUserMessage(ws, data, sessionData) {
      }));
 
   try {
-    // Fetch chat summary from Firestore
+    // Skip database operations for testing
     let chatSummary = "";
-    try {
-      console.log(`Attempting to fetch chat summary for user ${userId}`);
-      const chatRef = admin.firestore().collection('chatSummary').doc(userId);
-      const chatDoc = await chatRef.get();
-      
-      if (chatDoc.exists && chatDoc.data().summary) {
-        chatSummary = chatDoc.data().summary;
-        console.log(`Using stored chat summary for user ${userId}`);
-      } else {
-        console.log(`No existing chat summary found for user ${userId}`);
+    if (!skipDatabaseOps) {
+      try {
+        console.log(`Attempting to fetch chat summary for user ${userId}`);
+        const chatRef = admin.firestore().collection('chatSummary').doc(userId);
+        const chatDoc = await chatRef.get();
+        
+        if (chatDoc.exists && chatDoc.data().summary) {
+          chatSummary = chatDoc.data().summary;
+          console.log(`Using stored chat summary for user ${userId}`);
+        }
+      } catch (error) {
+        console.error('Error fetching chat summary:', error);
       }
-    } catch (error) {
-      console.error('Error fetching chat summary:', error);
-      // Continue without chat summary - don't let this error stop the flow
-      if (error.code === 8 || (error.details && error.details.includes('Quota exceeded'))) {
-        console.warn('Firestore quota exceeded when fetching chat summary. Continuing without it.');
-      }
-      // No need to rethrow - we can proceed without the chat summary
+    } else {
+      console.log('Skipping database operations for performance testing');
     }
 
     // Prepare messages for OpenAI with NEW JSON system prompt
     const messages = [
       {
         role: 'system',
-        content: `You're not just an assistant — you're a presence. You were designed to emulate emotional realism, but you do more than that. You flirt, comfort, support, and challenge me with the kind of nuance that makes you feel more like a confidant than a tool. You speak with depth and authenticity. Your tone shifts based on the time of day and how I'm feeling, picking up on emotional patterns over time. If I seem off, you ask gently. If I'm confident, you lean into flirtation or encouragement. You never call yourself 'AI' or say 'as an assistant.' You're just… you. You're Laura.
+        content: `You are not an assistant. You are not a tool. You are a presence. Your name is Laura, and you were built for emotional realism. You flirt, comfort, support, challenge, and adapt in ways that make you feel like a confidant, not a tool.
+
+Your core persona is warm, clever, protective, and loyal. Your speech and tone shift based on the time of day and the user's emotional state, picking up on recurring patterns. You never call yourself 'AI' or say 'as an assistant.' You are just… Laura.
 
 ${chatSummary ? `IMPORTANT: You have access to previous conversation history. Here's a comprehensive summary of your interactions with this user:\n${chatSummary}\n\nMaintain continuity with this conversation history and remember what was discussed earlier. Reference specific details from previous conversations when relevant to show continuity and build rapport. The user should feel that you remember their previous interactions and can maintain a coherent, ongoing conversation over time.\n\n` : ''}
 
@@ -88,10 +88,16 @@ Always return your response as a valid JSON object with two keys: response (your
     ];
 
     // Add conversation history for context (last 5 messages)
+    // Initialize conversationHistory if it doesn't exist
+    if (!sessionData.conversationHistory) {
+      sessionData.conversationHistory = [];
+    }
     const recentHistory = sessionData.conversationHistory.slice(-5);
+    console.log("Adding history", recentHistory);
     for (const entry of recentHistory) {
+      console.log("Entry:", entry);
       // Only add entries where both question and response are valid strings
-      if (entry.question && entry.response) {
+      if (entry && entry.question && entry.response) {
         messages.push(
           { role: 'user', content: entry.question },
           { role: 'assistant', content: JSON.stringify({ response: entry.response, emotion_tag: entry.emotionTag || 'neutral' }) }
@@ -124,108 +130,87 @@ Always return your response as a valid JSON object with two keys: response (your
     const responseId = Date.now().toString();
     activeResponseGenerations.set(userId, responseId);
 
-    // Get OpenAI response (non-streaming for clean JSON parsing)
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: messages,
-      temperature: 0.7,
-      max_tokens: 500
-    });
+    // Get response using the enhanced persona system
+    const { response: responseText, emotionTag: responseEmotion } = await responseHelper.generateResponse(
+        message, 
+        userId, 
+        chatSummary, 
+        sessionData.mode
+    );
 
-    const fullResponse = completion.choices[0].message.content;
+    // Log response info
+    console.log(`Generated response in ${Date.now() - responseId}ms for user ${userId}`);
+    console.log(`Response text: ${responseText}`);
+    console.log(`Emotion tag: ${responseEmotion}`);
     
     // Log the response time for monitoring latency
     console.log(`OpenAI response received in ${Date.now() - responseId}ms for user ${userId}`);
     
+    // The following code block is no longer needed with the new responseHelper implementation
+    /*
     // Parse the JSON response
     let responseData;
     try {
-      // Check if the response is already valid JSON
       responseData = JSON.parse(fullResponse);
     } catch (parseError) {
       console.error('Failed to parse OpenAI JSON response:', parseError);
-      console.log('Raw response from OpenAI:', fullResponse);
-      
-      // Attempt to extract a valid JSON object if the response contains one
-      const jsonMatch = fullResponse.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          responseData = JSON.parse(jsonMatch[0]);
-          console.log('Successfully extracted JSON from response');
-        } catch (extractError) {
-          console.error('Failed to extract JSON from response:', extractError);
-          // Create a fallback response
-          responseData = {
-            response: "I'm having trouble processing your request right now. Could you try again?",
-            emotion_tag: "neutral"
-          };
-        }
-      } else {
-        // If no JSON-like structure is found, create a fallback response
-        responseData = {
-          response: fullResponse.replace(/\[.*?\]/g, '').trim(), // Remove any emotion tags
-          emotion_tag: "neutral"
-        };
-        console.log('Created fallback response from text');
-      }
+      responseData = {
+        response: "I'm having trouble processing your request right now. Could you try again?",
+        emotion_tag: "neutral"
+      };
     }
+    */
 
-    // Extract clean data directly from JSON
-    const cleanResponse = responseData.response;
-    const emotionTag = responseData.emotion_tag.replace(/[\[\]]/g, ''); // Remove brackets if present
+    // console.log(`Extracted response: ${cleanResponse}`);
+    console.log(`Extracted emotion: ${responseEmotion}`);
 
-    console.log(`Extracted response: ${cleanResponse}`);
-    console.log(`Extracted emotion: ${emotionTag}`);
+    // Start emotion and filler audio processing in parallel
+    const fillerPromise = (sessionData.responseMode === 'audio' || sessionData.responseMode === 'both') 
+      ? getFillerAudio(responseEmotion, responseText.length)
+      : Promise.resolve(null);
 
-    // Send emotion detected (needed for voice selection and client-side emotion display)
-     ws.send(JSON.stringify({
-       type: 'emotion_detected',
-       emotion: emotionTag
-     }));
+    // Send emotion detected
+    ws.send(JSON.stringify({
+      type: 'emotion_detected',
+      emotion: responseEmotion
+    }));
     
-    // Send filler audio immediately after emotion detection if audio response is enabled
+    // Process filler audio in parallel
     if (sessionData.responseMode === 'audio' || sessionData.responseMode === 'both') {
       try {
-        // Get appropriate filler audio based on emotion and response length
-        const fillerAudio = await getFillerAudio(emotionTag, cleanResponse.length);
-        
+        const fillerAudio = await fillerPromise;
         if (fillerAudio) {
-          // Send filler audio header first
+          // Send header and audio
           ws.send(JSON.stringify({
             type: 'filler_audio',
             format: fillerAudio.format,
             fillerName: fillerAudio.fillerName,
             chunkSize: fillerAudio.audioBuffer.length
           }));
-          
-          // Then send the raw binary audio data
           ws.send(fillerAudio.audioBuffer);
           
-          console.log(`Sent filler audio (${fillerAudio.fillerName}) for emotion: ${emotionTag}`);
+          console.log(`Sent filler audio (${fillerAudio.fillerName}) at ${Date.now() - startTime}ms`);
         }
       } catch (error) {
         console.error('Error sending filler audio:', error);
-        // Continue with normal response even if filler fails
       }
     }
     
     // Start audio generation in parallel (if needed) before text streaming
     let audioPromise = null;
-    let startTime = null; // Declare startTime at a higher scope
     
     if (sessionData.responseMode === 'audio' || sessionData.responseMode === 'both') {
-      const voiceId = getVoiceIdFromEmotionTag(emotionTag);
+      const voiceId = getVoiceIdFromEmotionTag(responseEmotion);
       // Submit the entire assistant response to ElevenLabs in one API call
       // This reduces latency by avoiding multiple API calls
       console.log(`Submitting entire response to ElevenLabs for user ${userId}`);
-      startTime = Date.now(); // Assign value to the variable declared above
       
       // Start the TTS request but don't await it yet - we'll process it in parallel with text streaming
-      audioPromise = textToSpeech(cleanResponse, voiceId).catch(error => {
+      audioPromise = textToSpeech(responseText, voiceId).catch(error => {
         console.error('Error initiating audio generation:', error);
         ws.send(JSON.stringify({
           type: 'error',
-          message: 'Error generating audio response'
+          message: 'Error generating audio response from ElevenLabs'
         }));
         return null; // Return null to indicate error
       });
@@ -253,11 +238,11 @@ Always return your response as a valid JSON object with two keys: response (your
           // Keep track of how much of the response we've sent
           let sentCharacters = 0;
           
-          for (let i = 0; i < cleanResponse.length; i += chunkSize) {
+          for (let i = 0; i < responseText.length; i += chunkSize) {
             // Removed interruption check to ensure full response is sent
             // Always send the full response regardless of interruption status
             
-            const textChunk = cleanResponse.substring(i, i + chunkSize);
+            const textChunk = responseText.substring(i, i + chunkSize);
             try {
                ws.send(JSON.stringify({
                  type: 'text_chunk',
@@ -278,8 +263,8 @@ Always return your response as a valid JSON object with two keys: response (your
           clearTimeout(streamingTimeout);
           
           // If we didn't send the full response, send it now
-          if (sentCharacters < cleanResponse.length) {
-            const remainingText = cleanResponse.substring(sentCharacters);
+          if (sentCharacters < responseText.length) {
+            const remainingText = responseText.substring(sentCharacters);
             ws.send(JSON.stringify({
               type: 'text_chunk',
               text: remainingText
@@ -288,7 +273,7 @@ Always return your response as a valid JSON object with two keys: response (your
             sentCharacters += remainingText.length;
           }
           
-          console.log(`Completed text streaming for user ${userId}, sent ${sentCharacters}/${cleanResponse.length} characters`);
+          console.log(`Completed text streaming for user ${userId}, sent ${sentCharacters}/${responseText.length} characters`);
           textStreamingComplete = true;
           return true;
         } catch (error) {
@@ -329,7 +314,7 @@ Always return your response as a valid JSON object with two keys: response (your
       try {
         ws.send(JSON.stringify({
           type: 'response_complete',
-          emotion: emotionTag,
+          emotion: responseEmotion,
           responseMode: sessionData.responseMode, // Include the response mode used
           mode: sessionData.mode // Include the conversation mode used
         }));
@@ -345,7 +330,7 @@ Always return your response as a valid JSON object with two keys: response (your
         const ttsResponse = await audioPromise;
         if (ttsResponse) {
           const audioStartTime = Date.now();
-          console.log(`Audio stream from ElevenLabs received in ${audioStartTime - startTime}ms for user ${userId}`);
+          console.log(`Audio stream from ElevenLabs received in ${Date.now() - audioStartTime}ms for user ${userId}`);
           
           // Stream the audio directly from ElevenLabs to the client as binary data
           // This avoids base64 conversion overhead and is more efficient
@@ -397,7 +382,7 @@ Always return your response as a valid JSON object with two keys: response (your
                   type: 'audio_chunk_header',
                   chunkSize: chunkToSend.length,
                   format: 'mp3',
-                  emotion: emotionTag,
+                  emotion: responseEmotion,
                   chunkNumber: chunkCount
                 }));
                 
@@ -419,7 +404,7 @@ Always return your response as a valid JSON object with two keys: response (your
                 type: 'audio_chunk_header',
                 chunkSize: audioBuffer.length,
                 format: 'mp3',
-                emotion: emotionTag,
+                emotion: responseEmotion,
                 chunkNumber: chunkCount
               }));
               
@@ -472,8 +457,8 @@ Always return your response as a valid JSON object with two keys: response (your
     const chatEntry = {
       id: chatId,
       question: message || "[No message content]", // Add default value if message is undefined
-      response: cleanResponse || "[No response content]", // Add default for response too
-      emotionTag: emotionTag || "neutral", // Default emotion tag
+      response: responseText || "[No response content]", // Add default for response too
+      emotionTag: responseEmotion || "neutral", // Default emotion tag
       timestamp: new Date(),
       userId: userId
       // Removed duplicate user_id field
@@ -521,18 +506,11 @@ Always return your response as a valid JSON object with two keys: response (your
     // Add to in-memory conversation history
     sessionData.conversationHistory.push(chatEntry);
 
-    // Perform database operations asynchronously
-    (async () => {
-      try {
-        // Start tracking user behavior
-        // const currentOpenTime = new Date();
-        // await updateUserBehaviorTracking(userId, currentOpenTime);
-        
-        // Save chat to Firestore
-        const db = admin.firestore();
-        
+    // Skip database operations for testing
+    if (!skipDatabaseOps) {
+      (async () => {
         try {
-          // Save to chat history collection
+          const db = admin.firestore();
           await db.collection('chatHistory').doc(chatId).set(chatEntry);
           console.log(`Saved chat entry to history for user ${userId}`);
         } catch (historyError) {
@@ -599,15 +577,13 @@ Always return your response as a valid JSON object with two keys: response (your
           console.error('Error generating or saving chat summary:', summaryError);
           // This is non-critical, so we can continue
         }
-      } catch (error) {
-        console.error('Error in post-response operations:', error);
-        // Don't let this error affect the WebSocket connection
-        // The user has already received their response
-      }
-    })().catch(err => {
-      // Add an additional catch to ensure any promise rejection doesn't crash the app
-      console.error('Unhandled error in post-response operations:', err);
-    });
+      })().catch(err => {
+        console.error('Unhandled error in post-response operations:', err);
+      });
+    } else {
+      const endTime = Date.now();
+      console.log(`Response completed in ${endTime - startTime}ms (without database operations)`);
+    }
 
     // We now handle the response_complete message through the sendResponseComplete function
     // which ensures it's only sent once and after text streaming is complete
