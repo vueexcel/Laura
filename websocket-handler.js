@@ -355,29 +355,32 @@ Always return your response as a valid JSON object with two keys: response (your
           
           // Add error handler for the overall response
           ttsResponse.data.on('error', handleStreamError);
-          
-          ttsResponse.data.on('data', (chunk) => {
+          console.log(`Pausing for 10 seconds after sending ${chunkCount} chunks`);
+
+          // Create a promise that resolves after 5 seconds
+          await new Promise(resolve => setTimeout(resolve, 10000));
+          ttsResponse.data.on('data', async (chunk) => {
             try {
               // Append the new chunk to our buffer
               audioBuffer = Buffer.concat([audioBuffer, chunk]);
-              
+
               // Process the buffer with a minimum chunk size of 200 bytes
-              // This allows for larger chunks when available
               const minChunkSize = 200;
               while (audioBuffer.length >= minChunkSize) {
-                // Determine chunk size - use the entire buffer if it's less than twice the minimum size
-                // otherwise use half the buffer size (but at least minChunkSize)
-                const chunkSize = audioBuffer.length < minChunkSize * 2 ? 
-                                 audioBuffer.length : 
-                                 Math.max(minChunkSize, Math.floor(audioBuffer.length / 2));
+                // Determine chunk size
+                // Add pause after every 50 chunks
                 
+                const chunkSize = audioBuffer.length < minChunkSize * 2
+                  ? audioBuffer.length
+                  : Math.max(minChunkSize, Math.floor(audioBuffer.length / 2));
+
                 const chunkToSend = audioBuffer.slice(0, chunkSize);
                 audioBuffer = audioBuffer.slice(chunkSize);
-                
+
                 chunkCount++;
                 totalBytes += chunkToSend.length;
-                
-                // First send a small JSON message to notify the client about the incoming binary chunk
+
+                // First send a small JSON message
                 ws.send(JSON.stringify({
                   type: 'audio_chunk_header',
                   chunkSize: chunkToSend.length,
@@ -385,8 +388,8 @@ Always return your response as a valid JSON object with two keys: response (your
                   emotion: responseEmotion,
                   chunkNumber: chunkCount
                 }));
-                
-                // Then send the actual binary chunk directly without base64 conversion
+
+                // Then send the actual binary chunk
                 ws.send(chunkToSend);
               }
             } catch (chunkError) {
