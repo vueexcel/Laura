@@ -71,12 +71,14 @@ function checkTriggers(userInput, userId) {
     const normalizedInput = userInput.toLowerCase();
     
     // Check for backstory trigger
-    if (normalizedInput.includes('who made you')) {
+    const creationRegex = /(who|how) (made|created|built|designed) you|where (did|do) you come from|what is your origin/;
+
+    if (creationRegex.test(normalizedInput)) {
         const backstoryIndex = handleBackstoryProgression(userId);
         return {
             response: personaSystem.backstory_progression[backstoryIndex],
             emotionTag: backstoryIndex === 0 ? 'Tender' : 
-                       backstoryIndex === 1 ? 'Vulnerable' : 'wistful'
+                backstoryIndex === 1 ? 'Vulnerable' : 'wistful'
         };
     }
 
@@ -153,7 +155,7 @@ async function generateResponse(userInput, userId, chatSummary = '', mode = 'neu
                     content: userInput
                 }
             ],
-            temperature: 0.7,
+            temperature: 0.8,
             max_tokens: 500
         });
 

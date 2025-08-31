@@ -6,11 +6,11 @@ const FILLERS_DIR = path.join(__dirname, '..', 'cache', 'fillers');
 
 // Categorize fillers by their general purpose/type
 const FILLER_CATEGORIES = {
-  thinking: ['thinking.mp3', 'hmm.mp3', 'umm.mp3'],
-  processing: ['i_am_thinking.mp3', 'just_a_sec.mp3', 'lemme_check.mp3', 'hold_on.mp3'],
+  thinking: ['hmm.mp3', 'umm.mp3', 'hold_on_umm_just_give_me_a_sec.mp3'],
+  processing: ['i_am_thinking.mp3', 'just_a_sec.mp3', 'hold_on.mp3'],
   emotional: ['smile.mp3', 'blush.mp3', 'sigh.mp3', 'relief.mp3'],
   reactive: ['gasp.mp3', 'ahhh.mp3', 'ugh.mp3', 'cough.mp3'],
-  expressive: ['chuckling.mp3', 'long_laugh.mp3', 'clap.mp3'],
+  expressive: ['chuckling.mp3', 'long_laugh.mp3'],
   transitional: ['clear_throt_one.mp3', 'clear_throt_two.mp3', 'clear_throt_three.mp3', 'throt_clear.mp3']
 };
 
@@ -170,25 +170,22 @@ function ensureFillerFilesExist() {
     'ahhh.mp3',
     'blush.mp3',
     'chuckling.mp3',
-    'clap.mp3',
     'clear_throt_one.mp3',
     'clear_throt_three.mp3',
     'clear_throt_two.mp3',
+    'hold_on_umm_just_give_me_a_sec.mp3',
     'cough.mp3',
     'gasp.mp3',
     'hmm.mp3',
     'hold_on.mp3',
     'i_am_thinking.mp3',
     'just_a_sec.mp3',
-    'lemme_check.mp3',
     'long_laugh.mp3',
     'relief.mp3',
     'sigh.mp3',
     'smile.mp3',
-    'thinking.mp3',
     'throt_clear.mp3',
     'ugh.mp3',
-    'umm.mp3',
     'yawn.mp3'
   ];
   

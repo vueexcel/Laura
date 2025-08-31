@@ -358,7 +358,7 @@ Always return your response as a valid JSON object with two keys: response (your
           console.log(`Pausing for 10 seconds after sending ${chunkCount} chunks`);
 
           // Create a promise that resolves after 5 seconds
-          await new Promise(resolve => setTimeout(resolve, 10000));
+          await new Promise(resolve => setTimeout(resolve, 1000));
           ttsResponse.data.on('data', async (chunk) => {
             try {
               // Append the new chunk to our buffer
@@ -810,7 +810,7 @@ async function handleAudioMessage(ws, data, sessionData) {
                                transcribedText.includes("I had trouble processing your audio") ||
                                transcribedText.includes("user is silence");
       
-      await handleUserMessage(ws, { 
+      await handleUserMessage(ws, {
           userId, 
           message: transcribedText, 
           responseMode: data.responseMode || sessionData.responseMode,

@@ -67,7 +67,7 @@ async function textToSpeech(text, voiceId) {
     // Use axios with responseType: 'stream'
     const response = await axios({
         method: 'post',
-        url: `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`,
+        url: `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_64`,
         headers: {
             'xi-api-key': process.env.labapiKey,
             'Content-Type': 'application/json'
