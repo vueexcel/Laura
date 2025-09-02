@@ -95,31 +95,142 @@ function checkTriggers(userInput, userId) {
     return null;
 }
 
+function analyzeUserEmotion(userMessage) {
+    if (!userMessage) return 'neutral';
+    
+    const message = userMessage.toLowerCase();
+    
+    // Flirty/romantic indicators
+    if (message.match(/\b(cute|sexy|hot|beautiful|gorgeous|handsome|attracted|crush|date|kiss|love|miss you|thinking about you)\b/) ||
+        message.includes('😘') || message.includes('😍') || message.includes('🥰') ||
+        message.match(/\b(wink|flirt|tease)\b/)) {
+        return 'flirty';
+    }
+    
+    // Sadness/melancholy indicators
+    if (message.match(/\b(sad|depressed|crying|hurt|lonely|heartbroken|upset|down|blue|miserable)\b/) ||
+        message.includes('😢') || message.includes('😭') || message.includes('💔') ||
+        message.match(/\b(feel bad|feeling down|not good|terrible day)\b/)) {
+        return 'melancholic';
+    }
+    
+    // Anxiety/stress indicators
+    if (message.match(/\b(anxious|worried|stressed|nervous|panic|overwhelmed|scared|afraid)\b/) ||
+        message.match(/\b(can't sleep|restless|on edge|freaking out)\b/)) {
+        return 'anxious';
+    }
+    
+    // Excitement/happiness indicators
+    if (message.match(/\b(excited|amazing|awesome|fantastic|incredible|wonderful|perfect|best day)\b/) ||
+        message.includes('!!!!') || message.includes('😄') || message.includes('🎉') ||
+        message.match(/\b(so happy|feeling great|on top of the world)\b/)) {
+        return 'overlyexcited';
+    }
+    
+    // Playful/cheeky indicators
+    if (message.match(/\b(haha|lol|funny|joke|silly|playful|mischief)\b/) ||
+        message.includes('😏') || message.includes('😜') || message.includes('😈') ||
+        message.match(/\b(tease|mess with|kidding)\b/)) {
+        return 'playful';
+    }
+    
+    // Vulnerable/sensitive indicators
+    if (message.match(/\b(vulnerable|scared|insecure|confused|lost|struggling|need help)\b/) ||
+        message.match(/\b(don't know what to do|feeling lost|need you|can you help)\b/)) {
+        return 'vulnerable';
+    }
+    
+    // Tender/intimate indicators
+    if (message.match(/\b(gentle|soft|tender|close|intimate|personal|deep|meaningful)\b/) ||
+        message.match(/\b(hold me|comfort|need warmth|feeling close)\b/)) {
+        return 'tender';
+    }
+    
+    // Confident/commanding indicators
+    if (message.match(/\b(confident|strong|determined|focused|ready|let's do this|i got this)\b/) ||
+        message.match(/\b(take charge|leadership|powerful|in control)\b/)) {
+        return 'confident';
+    }
+    
+    // Check for whispering patterns (lots of ellipses, quiet language)
+    if (message.match(/\.{3,}/) || message.match(/\b(whisper|quiet|softly|gently|shh)\b/)) {
+        return 'whispering';
+    }
+    
+    // Possessive/jealous indicators
+    if (message.match(/\b(mine|jealous|don't like when|only me|just us|possessive)\b/)) {
+        return 'possessive';
+    }
+    
+    return 'neutral';
+}
+
 /**
  * Generate the system prompt based on current context
  */
-function generateSystemPrompt(chatSummary = '', mode = 'neutral') {
+function generateSystemPrompt(chatSummary = '', mode = 'neutral', userMessage = '') {
     if (!personaSystem) {
         throw new Error('Persona system not initialized');
     }
 
-    const { core_prompt, emotional_principles, conversation_modes } = personaSystem;
+    const {
+        core_prompt,
+        emotional_principles,
+        conversation_modes,
+        personality_framework,
+        intimacy_modes,
+        core_behaviors,
+        restrictions,
+        fillers
+    } = personaSystem;
+    
+    // Analyze user's emotional state
+    const detectedEmotion = analyzeUserEmotion(userMessage);
     
     let prompt = `${core_prompt}\n\n`;
     prompt += "**Emotional Intelligence & Persona Principles:**\n";
-    
     Object.entries(emotional_principles).forEach(([key, value]) => {
         prompt += `- **${key.replace('_', ' ')}:** ${value}\n`;
     });
+    prompt += "IMPORTANT!! Format your response as a JSON object with 'response' and 'emotion_tag' keys.\n";
+    prompt += "\n**Personality Framework:**\n";
+    prompt += `- Memory Style: ${personality_framework.memory_style}\n`;
+    prompt += "- Tone Adaptation:\n";
+    Object.entries(personality_framework.tone_adaptation).forEach(([key, value]) => {
+        prompt += `  - ${key.replace('_', ' ')}: ${value}\n`;
+    });
+    prompt += `- Speech Patterns: ${personality_framework.speech_patterns}\n`;
 
     if (chatSummary) {
         prompt += `\nPrevious Conversation Context:\n${chatSummary}\n`;
     }
 
     prompt += `\nCurrent Mode: ${conversation_modes[mode]}\n\n`;
-    prompt += "Remember: Never use emotional descriptions or actions (like *smiles*, *laughs*, etc).\n";
-    prompt += "Format your response as a JSON object with 'response' and 'emotion_tag' keys.\n";
-    prompt += `Available emotion tags: ${personaSystem.emotion_tags.join(', ')}`;
+    
+    // Add core behaviors for voice optimization
+    prompt += `Voice Behavior: ${core_behaviors.voice_optimization}\n`;
+    prompt += `Loyalty: ${core_behaviors.loyalty}\n`;
+
+    // Add intimacy modes if it's night time
+    const hour = new Date().getHours();
+    if (hour >= 22 || hour < 5) {
+        prompt += `Night Mode: ${intimacy_modes.night_mode}\n`;
+    }
+
+    // Add user's detected emotional state
+    prompt += `\nUser's Current Emotional State: ${detectedEmotion}\n`;
+    prompt += `Respond with emotional tone that matches and complements the user's ${detectedEmotion} state.\n`;
+
+    // Add restrictions
+    restrictions.forEach(restriction => {
+        prompt += `\n**RESTRICTION:** ${restriction}`;
+    });
+    prompt += "\n**MUST NEEDED!!** Laura’s speech uses fillers dynamically depending on her emotional state. Always use ellipses (…) and commas to create natural pauses. Stretch fillers slightly (“uhh…,” “mmm…”) to sound real."
+    prompt += `Filler words to use: ${fillers.filler_words.join(',')}\n`;
+    prompt += `Filler usecase: ${fillers.filler_usecase.join(' ')}\n`;
+    prompt += "IMPORTANT!! Format your response as a JSON object with 'response' and 'emotion_tag' keys.\n";
+    // Provide the selected emotion tag instead of all available ones
+    prompt += `Use emotion tag: ${detectedEmotion}\n`;
 
     return prompt;
 }
@@ -141,7 +252,7 @@ async function generateResponse(userInput, userId, chatSummary = '', mode = 'neu
         }
 
         // Generate dynamic response using OpenAI
-        const systemPrompt = generateSystemPrompt(chatSummary, mode);
+        const systemPrompt = generateSystemPrompt(chatSummary, mode, userInput);
         
         const completion = await openai.chat.completions.create({
             model: 'gpt-3.5-turbo',
@@ -155,7 +266,7 @@ async function generateResponse(userInput, userId, chatSummary = '', mode = 'neu
                     content: userInput
                 }
             ],
-            temperature: 0.8,
+            temperature: 0.7,
             max_tokens: 500
         });
 

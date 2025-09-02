@@ -6,8 +6,8 @@ const FILLERS_DIR = path.join(__dirname, '..', 'cache', 'fillers');
 
 // Categorize fillers by their general purpose/type
 const FILLER_CATEGORIES = {
-  thinking: ['hmm.mp3', 'umm.mp3', 'hold_on_umm_just_give_me_a_sec.mp3'],
-  processing: ['i_am_thinking.mp3', 'just_a_sec.mp3', 'hold_on.mp3'],
+  thinking: ['hmm.mp3', 'umm.mp3'],
+  processing: ['i_am_thinking.mp3',, 'hold_on_umm_just_give_me_a_sec.mp3', 'just_a_sec.mp3', 'hold_on.mp3'],
   emotional: ['smile.mp3', 'blush.mp3', 'sigh.mp3', 'relief.mp3'],
   reactive: ['gasp.mp3', 'ahhh.mp3', 'ugh.mp3', 'cough.mp3'],
   expressive: ['chuckling.mp3', 'long_laugh.mp3'],

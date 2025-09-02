@@ -37,12 +37,16 @@ async function transcribeAudio(audioData, format = 'webm') {
     throw error;
   }
 
+  let startTime;
   try {
     console.log('Making OpenAI API request...');
+    startTime = Date.now(); // Record start time
+
     const response = await openai.audio.transcriptions.create({
       file: audio,
       model: 'whisper-1',
       response_format: 'text',
+      temperature: 0.5,
     });
 
     if (!response) {
@@ -50,7 +54,12 @@ async function transcribeAudio(audioData, format = 'webm') {
       return "user is silence";
     }
 
+    const endTime = Date.now(); // Record end time
+    const transcriptionTime = (endTime - startTime) / 1000; // Calculate time in seconds
+
     console.log('OpenAI API Response:', response);
+    console.log(`Transcription time: ${transcriptionTime} seconds`); // Log transcription time
+
     return response; // OpenAI SDK returns the text directly when response_format is 'text'
   } catch (error) {
     console.error('OpenAI API Error:', error);
