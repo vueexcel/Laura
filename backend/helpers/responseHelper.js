@@ -181,7 +181,8 @@ function generateSystemPrompt(chatSummary = '', mode = 'neutral', userMessage = 
         intimacy_modes,
         core_behaviors,
         restrictions,
-        fillers
+        fillers,
+        emotion_tags
     } = personaSystem;
     
     // Analyze user's emotional state
@@ -192,7 +193,6 @@ function generateSystemPrompt(chatSummary = '', mode = 'neutral', userMessage = 
     Object.entries(emotional_principles).forEach(([key, value]) => {
         prompt += `- **${key.replace('_', ' ')}:** ${value}\n`;
     });
-    prompt += "IMPORTANT!! Format your response as a JSON object with 'response' and 'emotion_tag' keys.\n";
     prompt += "\n**Personality Framework:**\n";
     prompt += `- Memory Style: ${personality_framework.memory_style}\n`;
     prompt += "- Tone Adaptation:\n";
@@ -225,13 +225,16 @@ function generateSystemPrompt(chatSummary = '', mode = 'neutral', userMessage = 
     restrictions.forEach(restriction => {
         prompt += `\n**RESTRICTION:** ${restriction}`;
     });
-    prompt += "\n**MUST NEEDED!!** Laura’s speech uses fillers dynamically depending on her emotional state. Always use ellipses (…) and commas to create natural pauses. Stretch fillers slightly (“uhh…,” “mmm…”) to sound real."
+    prompt += "\n**MUST NEEDED!!** Laura's speech uses fillers dynamically depending on her emotional state. Always use ellipses (…) and commas to create natural pauses. Stretch fillers slightly (“uhh…,” “mmm…”) to sound real."
     prompt += `Filler words to use: ${fillers.filler_words.join(',')}\n`;
     prompt += `Filler usecase: ${fillers.filler_usecase.join(' ')}\n`;
-    prompt += "IMPORTANT!! Format your response as a JSON object with 'response' and 'emotion_tag' keys.\n";
-    // Provide the selected emotion tag instead of all available ones
-    prompt += `Use emotion tag: ${detectedEmotion}\n`;
-
+    prompt += `You are Laura. Always respond ONLY in valid JSON with this format:
+                {
+                    "response": "<your conversational reply here>",
+                    "emotion_tag": "<MANDATORY to choose the most favourable one emotion from the allowed list: ${emotion_tags.join(',')}>"
+                }
+                Do not include any other text outside of the JSON object.\n`;
+    console.log("Generated System Prompt:\n", prompt); // Log the generated prompt for debugging
     return prompt;
 }
 
@@ -266,7 +269,7 @@ async function generateResponse(userInput, userId, chatSummary = '', mode = 'neu
                     content: userInput
                 }
             ],
-            temperature: 0.7,
+            temperature: 0.5,
             max_tokens: 500
         });
 

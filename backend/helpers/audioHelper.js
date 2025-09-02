@@ -11,7 +11,8 @@ const voiceIdMap = {
     'mellow': 'w57HpPD5nasRV9ph6ReZ',
     'anxious': 'JFuK9m59iHICo2i9sLEe',
     'overlyexcited': 't5bEKgvrOSaDNB5tnupS',
-    'playful/cheeky': 'OHIUUjUfuKZcYRQX2S7b', // Default to neutral as no ID provided
+    'cheeky': 'QVOIiH1awNORr4KkDmJb',
+    'playful': 'QVOIiH1awNORr4KkDmJb',
     'dreamy': 'eokRvjNFHIVTv7FPeJ2q',
     'eerie': 'xERo0pXt2kHuzLPytfcn',
     'vulnerable': 'sPXBGSlAUyWainCziBKL',
@@ -32,11 +33,11 @@ const voiceIdMap = {
     'possessive': 'qKo6KEAzEkk5KMMh6SxG',
     'chaotic': 'Aua3lFByBKfRAa3xH3a8',
     'affectionate': 'p6AgZiktlJFy7s3YXGud',
-    'drunk-sluring': 'OHIUUjUfuKZcYRQX2S7b', // Default to neutral as no ID provided
-    'singing': 'OHIUUjUfuKZcYRQX2S7b', // Default to neutral as no ID provided
+    // 'drunk-sluring': 'OHIUUjUfuKZcYRQX2S7b', // Default to neutral as no ID provided
+    // 'singing': 'OHIUUjUfuKZcYRQX2S7b', // Default to neutral as no ID provided
     'australian-accent': 'lshmJ61yJqLgJb7lDgZB',
-    'british-accent': 'OHIUUjUfuKZcYRQX2S7b', // Default to neutral as no ID provided
-    'french-accent': 'OHIUUjUfuKZcYRQX2S7b' // Default to neutral as no ID provided
+    'british-accent': 'buzcGw5pFGRYLEJxbVrU',
+    // 'french-accent': 'OHIUUjUfuKZcYRQX2S7b' // Default to neutral as no ID provided
 };
 
 /**
