@@ -1,18 +1,18 @@
-const { OpenAI } = require('openai');
 const fs = require('fs');
 require('dotenv').config();
+const Groq = require('groq-sdk');
 
-if (!process.env.apiKey) {
-  throw new Error('apiKey environment variable is not set');
+if (!process.env.GROQ_API_KEY) {
+  throw new Error('GROQ_API_KEY environment variable is not set');
 }
 
-const openai = new OpenAI({ apiKey: process.env.apiKey });
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-async function transcribeAudio(audioData, format = 'webm') {
+async function transcribeAudio(audioData, format = 'm4a') { // Changed default format to m4a
   // Check if audioData is a file path (string) or a buffer
   let audio;
   let tempFilePath = null;
-  
+
   try {
     if (typeof audioData === 'string') {
       // It's a file path
@@ -25,7 +25,7 @@ async function transcribeAudio(audioData, format = 'webm') {
       const os = require('os');
       const path = require('path');
       tempFilePath = path.join(os.tmpdir(), `temp-audio-${Date.now()}.${format}`);
-      
+
       // Write buffer to temporary file
       fs.writeFileSync(tempFilePath, audioData);
       audio = fs.createReadStream(tempFilePath);
@@ -39,37 +39,36 @@ async function transcribeAudio(audioData, format = 'webm') {
 
   let startTime;
   try {
-    console.log('Making OpenAI API request...');
+    console.log('Making Groq API request...');
     startTime = Date.now(); // Record start time
 
-    const response = await openai.audio.transcriptions.create({
+    const response = await groq.audio.transcriptions.create({
       file: audio,
-      model: 'whisper-1',
-      response_format: 'text',
-      temperature: 0.5,
+      model: 'whisper-large-v3-turbo',
+      response_format: 'verbose_json',
     });
 
-    if (!response) {
-      console.warn('Empty response received from OpenAI API.');
+    if (!response || !response.text) {
+      console.warn('Empty or malformed response received from Groq API.');
       return "user is silence";
     }
 
     const endTime = Date.now(); // Record end time
     const transcriptionTime = (endTime - startTime) / 1000; // Calculate time in seconds
 
-    console.log('OpenAI API Response:', response);
+    console.log('Groq API Response:', response);
     console.log(`Transcription time: ${transcriptionTime} seconds`); // Log transcription time
 
-    return response; // OpenAI SDK returns the text directly when response_format is 'text'
+    return response.text; // Groq SDK returns a JSON object, extract the text
   } catch (error) {
-    console.error('OpenAI API Error:', error);
+    console.error('Groq API Error:', error);
     // Return a user-friendly error message, preserving the error details for debugging.
     return `user is silence. (Details: ${error.message})`;
   } finally {
     if (audio) {
       audio.destroy(); // Clean up the stream
     }
-    
+
     // Delete temporary file if one was created
     if (tempFilePath && fs.existsSync(tempFilePath)) {
       try {
